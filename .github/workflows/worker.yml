@@ -70,7 +70,13 @@ jobs:
       - name: Worker veröffentlichen
         id: deploy
         run: |
-          npx wrangler deploy | tee deploy.log
+          set -o pipefail
+          npx wrangler deploy 2>&1 | tee deploy.log || {
+            if grep -q "workers.dev subdomain" deploy.log; then
+              echo "::error::Bei Cloudflare fehlt noch die workers.dev-Subdomain. Einmalig unter Workers & Pages festlegen (ANLEITUNG.md, Schritt 1.4) und dann 'Re-run all jobs'."
+            fi
+            exit 1
+          }
           URL="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
