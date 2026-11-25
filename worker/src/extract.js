@@ -144,23 +144,76 @@ export function extractCoupons(text) {
 }
 
 /** Hauptfunktion: alles Relevante aus einer Produktseite. */
-export function extractOffer(html, url, settings = {}) {
+export const normGtin = (g) => (g == null ? null : String(g).replace(/\D/g, '').replace(/^0+/, '') || null);
+export const normMpn = (m) => (m == null ? null : String(m).toUpperCase().replace(/[^A-Z0-9]/g, '') || null);
+const gtinOf = (n) => normGtin(n?.gtin13 ?? n?.gtin ?? n?.gtin14 ?? n?.gtin12 ?? n?.gtin8 ?? n?.ean ?? n?.isbn);
+
+const LISTING_TYPES = ['ItemList', 'CollectionPage', 'SearchResultsPage', 'OfferCatalog'];
+const LISTING_URL = /(\/search|\/suche|\/s\?|[?&](q|query|search|searchterm|keyword|k)=|\/kategorie|\/category|\/categories|\/c\/|\/collections\/[^/]+\/?(\?|$)|\/marke\/|\/brand\/|\/angebote\/?(\?|$)|\/sale\/?(\?|$))/i;
+
+/**
+ * Hauptfunktion: alles Relevante aus einer Produktseite.
+ * want = { gtin, mpn }: gesuchter Artikel – bei Seiten mit Varianten (Größe/Farbe)
+ * wird genau diese Variante gewählt.
+ */
+export function extractOffer(html, url, settings = {}, want = {}) {
   const text = htmlToText(html);
   const ld = extractJsonLd(html);
-  let product = null;
-  for (const root of ld) for (const n of walk(root)) if (!product && isType(n, 'Product')) product = n;
+
+  // Alle Produkte der Seite sammeln (inkl. Varianten von ProductGroups)
+  const products = [];
+  let listing = false;
+  for (const root of ld) {
+    for (const n of walk(root)) {
+      if (LISTING_TYPES.some((t) => isType(n, t)) && JSON.stringify(n.itemListElement || n.mainEntity || '').includes('Product')) listing = true;
+      if (isType(n, 'Product') || isType(n, 'ProductGroup')) products.push(n);
+    }
+  }
+  // Mehrere verschiedene Produkte ohne gemeinsame Produktgruppe = Liste/Kategorie
+  const groupIds = new Set(products.map((p) => p.productGroupID || p.inProductGroupWithID || (isType(p, 'ProductGroup') ? 'G' : null)).filter(Boolean));
+  const names = new Set(products.map((p) => String(p.name || '').toLowerCase().trim()).filter(Boolean));
+  if (names.size > 3 && groupIds.size === 0) listing = true;
+  try { if (LISTING_URL.test(new URL(url).pathname + new URL(url).search)) listing = listing || products.length !== 1; } catch {}
+
+  // Kandidaten: jede Kombination aus Produkt(-variante) und Angebot
+  const entries = [];
+  for (const p of products) {
+    for (const o of offerFromLd(p.offers)) {
+      entries.push({ product: p, ...o, gtin: gtinOf(o.raw) || gtinOf(p), mpn: normMpn(o.raw?.mpn || p.mpn), offerUrl: o.raw?.url || p.url || null });
+    }
+  }
+  const allGtins = [...new Set(entries.map((e) => e.gtin).concat(products.map(gtinOf)).filter(Boolean))];
+  const allMpns = [...new Set(entries.map((e) => e.mpn).concat(products.map((p) => normMpn(p.mpn))).filter(Boolean))];
+
+  let chosen = null;
+  const wantGs = new Set([want.gtin, ...(want.gtins || [])].map(normGtin).filter(Boolean));
+  const wantG = wantGs.size ? [...wantGs][0] : null, wantM = normMpn(want.mpn);
+  if (wantG) chosen = entries.filter((e) => wantGs.has(e.gtin)).reduce((a, b) => (!a || b.price < a.price ? b : a), null);
+  if (!chosen && wantM && !wantG) chosen = entries.find((e) => e.mpn === wantM) || null;
+  if (!chosen && !wantG && !wantM) {
+    // Variante über die URL (z. B. ?variant=123) oder einziges Produkt
+    let pageUrl = '';
+    try { pageUrl = new URL(url).search; } catch {}
+    const variantParam = pageUrl.match(/[?&](variant|v|size|groesse|color|farbe|sku)=([^&]+)/i)?.[2];
+    if (variantParam) chosen = entries.find((e) => e.offerUrl && String(e.offerUrl).includes(variantParam)) || null;
+    if (!chosen && entries.length) {
+      const fams = new Set(entries.map((e) => e.product));
+      chosen = fams.size === 1 ? entries.reduce((a, b) => (b.price < a.price ? b : a)) : entries[0];
+    }
+  }
+  const product = chosen?.product || products.find((p) => isType(p, 'Product')) || null;
+  const ambiguousVariant = !wantG && !wantM && new Set(entries.map((e) => e.gtin || e.mpn)).size > 1;
 
   const title = decodeEntities(
     String(product?.name || meta(html, ['og:title', 'twitter:title']) || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ''),
   ).replace(/\s+/g, ' ').trim();
 
   let price = null, oldPrice = null, currency = 'EUR', raw = null;
-  const offers = product ? offerFromLd(product.offers) : [];
-  if (offers.length) {
-    const best = offers.reduce((a, b) => (b.price < a.price ? b : a));
-    ({ price, oldPrice, raw } = best);
-    currency = best.currency || 'EUR';
-  } else {
+  if (chosen) {
+    ({ price, oldPrice, raw } = chosen);
+    currency = chosen.currency || 'EUR';
+  } else if (!products.length && !wantG && !wantM) {
+    // Seiten ohne strukturierte Daten: nur Meta-Angaben (kein Variantenabgleich möglich)
     price = parsePrice(meta(html, ['product:price:amount', 'og:price:amount', 'price']));
     currency = meta(html, ['product:price:currency', 'og:price:currency', 'priceCurrency']) || 'EUR';
     if (price == null) {
@@ -169,6 +222,8 @@ export function extractOffer(html, url, settings = {}) {
       price = parsePrice(ip?.[1]);
     }
   }
+  const chosenGtin = chosen?.gtin || (products.length === 1 ? gtinOf(products[0]) : null);
+  const chosenMpn = chosen?.mpn || (products.length === 1 ? normMpn(products[0].mpn) : null);
 
   const conditionRaw = raw?.itemCondition || product?.itemCondition || meta(html, ['product:condition', 'og:condition']);
   const condition = conditionFrom(conditionRaw, title);
@@ -199,11 +254,12 @@ export function extractOffer(html, url, settings = {}) {
     try { return u ? new URL(u, url).toString() : null; } catch { return null; }
   })();
 
-  const gtin = String(product?.gtin13 || product?.gtin || product?.gtin14 || product?.gtin12 || product?.gtin8 || product?.ean || '').replace(/\D/g, '') || null;
   const sellerName = first(raw?.seller)?.name || null;
+  let offerUrl = url;
+  try { if (chosen?.offerUrl && new URL(chosen.offerUrl, url).hostname === new URL(url).hostname) offerUrl = new URL(chosen.offerUrl, url).toString(); } catch {}
 
   return {
-    url,
+    url: offerUrl,
     title,
     price,
     currency: String(currency).toUpperCase(),
@@ -216,7 +272,12 @@ export function extractOffer(html, url, settings = {}) {
     condition,
     available,
     image,
-    gtin,
+    gtin: chosenGtin,
+    gtins: allGtins,
+    mpn: chosenMpn,
+    mpns: allMpns,
+    isListing: listing,
+    ambiguousVariant,
     brand: first(product?.brand)?.name || (typeof product?.brand === 'string' ? product.brand : null),
     sellerName,
     coupons: extractCoupons(text),

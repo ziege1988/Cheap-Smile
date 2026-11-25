@@ -67,3 +67,24 @@ test('matchScore: Modellnummer muss passen, Zubehör fliegt raus', () => {
   assert.equal(matchScore('Sony WH-1000XM5', 'Hülle für Sony WH-1000XM5'), 0);
   assert.equal(domainOf('https://www.otto.de/p/123'), 'otto.de');
 });
+
+test('Kategorie-/Listenseite wird als solche erkannt', () => {
+  const list = `<script type="application/ld+json">${JSON.stringify({ '@type': 'ItemList', itemListElement: [1, 2, 3, 4].map((i) => ({ '@type': 'ListItem', item: { '@type': 'Product', name: `Merino Shirt ${i}`, gtin13: `400000000000${i}`, offers: { '@type': 'Offer', price: 20 + i, priceCurrency: 'EUR' } } })) })}</script>`;
+  assert.equal(extractOffer(list, 'https://x.de/damen/merino').isListing, true);
+  assert.equal(extractOffer(productPage({ name: 'A', price: 10 }), 'https://x.de/suche?q=merino').isListing, false, 'einzelnes Produkt bleibt Produkt');
+});
+
+test('Varianten: genau die gesuchte EAN (Größe/Farbe) wird gewählt', () => {
+  const group = `<script type="application/ld+json">${JSON.stringify({ '@type': 'ProductGroup', name: 'Merino Unterhemd', productGroupID: 'MU1', hasVariant: [
+    { '@type': 'Product', name: 'Merino Unterhemd S', gtin13: '5712345000011', offers: { '@type': 'Offer', price: '34.95', priceCurrency: 'EUR', url: 'https://dilling.de/p/mu?variant=11' } },
+    { '@type': 'Product', name: 'Merino Unterhemd M', gtin13: '5712345000028', offers: { '@type': 'Offer', price: '36.95', priceCurrency: 'EUR', url: 'https://dilling.de/p/mu?variant=22' } },
+  ] })}</script>`;
+  const m = extractOffer(group, 'https://dilling.de/p/mu', {}, { gtin: '5712345000028' });
+  assert.equal(m.price, 36.95);
+  assert.equal(m.gtin, '5712345000028');
+  assert.equal(m.url, 'https://dilling.de/p/mu?variant=22', 'Link führt direkt zur Variante');
+  const viaUrl = extractOffer(group, 'https://dilling.de/p/mu?variant=11');
+  assert.equal(viaUrl.gtin, '5712345000011');
+  assert.equal(extractOffer(group, 'https://dilling.de/p/mu').ambiguousVariant, true);
+  assert.equal(extractOffer(group, 'https://dilling.de/p/mu', {}, { gtin: '9999999999999' }).price, null, 'gesuchte Variante fehlt');
+});

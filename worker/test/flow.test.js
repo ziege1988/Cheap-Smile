@@ -157,3 +157,28 @@ test('Shop-Link: Name sofort übernommen, nach Sperre wird bei „Jetzt neu prü
   assert.equal(d.excluded.length, 0);
   assert.equal(d.best.effectiveTotal, 34.95);
 });
+
+test('Nur exakt derselbe Artikel: andere EAN, ähnliche Titel und Kategorieseiten fliegen raus', async () => {
+  const listing = `<script type="application/ld+json">${JSON.stringify({ '@type': 'ItemList', itemListElement: [1, 2, 3, 4].map((i) => ({ '@type': 'ListItem', item: { '@type': 'Product', name: `Sony Kopfhörer ${i}`, gtin13: '4548736132610', offers: { '@type': 'Offer', price: 100 + i, priceCurrency: 'EUR' } } })) })}</script>`;
+  const web = fakeWeb({
+    'https://html.duckduckgo.com/': ddg(['https://haendler-a.de/p/1', 'https://haendler-b.de/p/2', 'https://haendler-c.de/kategorie/kopfhoerer']),
+    ...shop('muster.de', productPage({ name: 'Sony WH-1000XM5 Schwarz', price: 299, shipping: 0, gtin: '4548736132610' })),
+    ...shop('haendler-a.de', productPage({ name: 'Sony WH-1000XM5 Kopfhörer schwarz', price: 279, shipping: 0, gtin: '4548736132610' })),
+    ...shop('haendler-b.de', productPage({ name: 'Sony WH-1000XM5 Kopfhörer silber', price: 259, shipping: 0, gtin: '4548736132627' })),
+    ...shop('haendler-c.de', listing),
+    'https://haendler-c.de/kategorie/': listing,
+  });
+  globalThis.fetch = web;
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'geheim' };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const call = async (method, path, body) => (await worker.fetch(new Request(`https://api.test${path}`, { method, headers: { Authorization: 'Bearer geheim', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), env, ctx)).json();
+  const p = await call('POST', '/api/products', { query: 'https://muster.de/p/1' });
+  await Promise.all(waits);
+  const d = await call('GET', `/api/products/${p.id}`);
+  assert.equal(d.gtin, '4548736132610');
+  assert.deepEqual(d.offers.map((o) => o.domain).sort(), ['haendler-a.de', 'muster.de'], 'silberne Variante und Kategorieseite ausgeschlossen');
+  assert.equal(d.best.domain, 'haendler-a.de');
+  assert.equal(d.best.url, 'https://haendler-a.de/p/1');
+  assert.equal(d.best.shop.checks.register, true);
+});

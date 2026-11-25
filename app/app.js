@@ -65,10 +65,33 @@ function shippingText(o) {
 const condLabel = (c) => ({ used: 'Gebraucht', refurbished: 'Refurbished', new: 'Neu' }[c] || c);
 const trustText = (s) => {
   if (s?.allowlisted) return s.verified ? '✓ geprüfter bekannter Händler' : '✓ bekannter Händler';
-  if (s?.trustScore != null) return `★ ${s.trustScore.toFixed(1)}${s.trustCount != null ? ` (${s.trustCount.toLocaleString('de-DE')})` : ''}`;
-  if (s?.trustUnknown) return '⚠️ Trustpilot nicht prüfbar';
+  if (s?.trustScore != null) return `★ ${s.trustScore.toFixed(1)}${s.trustCount != null ? ` (${s.trustCount.toLocaleString('de-DE')})` : ''} Trustpilot`;
+  if (s?.trustUnknown) return '✓ geprüfter Shop';
   return '';
 };
+
+/** Grünes Vertrauens-Abzeichen für die Kachel */
+function trustBadge(s) {
+  if (!s) return '';
+  if (s.allowlisted) return '<span class="badge wish">✓ Bekannter Händler</span>';
+  if (s.trustScore != null) return `<span class="badge wish">★ ${s.trustScore.toFixed(1)} Trustpilot · geprüft</span>`;
+  if (s.trustUnknown) return '<span class="badge wish">✓ Geprüfter Shop</span>';
+  return '<span class="badge wish">✓ Geprüft</span>';
+}
+
+/** Was wurde geprüft? (Details) */
+function checksText(s) {
+  const c = s?.checks;
+  if (!c) return '';
+  const parts = [];
+  if (c.impressum) parts.push('Impressum ✓');
+  if (c.register) parts.push('Handelsregister/USt-ID ✓');
+  if (c.withdrawal) parts.push(`${c.withdrawalDays || 14} Tage Widerruf ✓`);
+  if (c.country) parts.push(`Sitz ${c.country}`);
+  if (c.ageYears) parts.push(`Domain ${c.ageYears} Jahr${c.ageYears === 1 ? '' : 'e'}`);
+  if (s.trustUnknown) parts.push('Trustpilot nicht abrufbar');
+  return parts.join(' · ');
+}
 
 function relTime(ts) {
   if (!ts) return 'noch nie';
@@ -89,6 +112,7 @@ function badgesFor(p) {
   if (best && p.wishPrice != null && best.effectiveTotal <= p.wishPrice) b.push('<span class="badge wish">🎯 Wunschpreis erreicht</span>');
   if (best?.discountPct) b.push(`<span class="badge hot">🔥 Aktion −${best.discountPct} %</span>`);
   if (best && best.condition !== 'new') b.push(`<span class="badge gold">${condLabel(best.condition)}</span>`);
+  if (best) b.push(trustBadge(best.shop));
   return b.join('');
 }
 
@@ -105,7 +129,7 @@ function tileHtml(p) {
         ${best
           ? `<div class="price">${eur(best.effectiveTotal)}</div>
              <div class="sub">${best.oldPrice ? `<span class="old">${eur(best.oldPrice)}</span>` : ''}${esc(shippingText(best))}</div>
-             <div class="sub">bei <strong>${esc(best.shopName || best.domain)}</strong> ${esc(trustText(best.shop))}</div>`
+             <div class="sub">bei <strong>${esc(best.shopName || best.domain)}</strong></div>`
           : `<div class="price ${p.pending ? 'skeleton' : ''}">${p.pending ? '000,00 €' : '–'}</div>
              <div class="sub">${p.pending ? 'Suche läuft' : esc(p.lastError || p.searchError || 'Noch kein passender Shop')}</div>`}
       </div>
@@ -188,8 +212,7 @@ function offerHtml(o, p, isBest) {
       ${o.shop ? `<span>${esc(trustText(o.shop))}</span>` : ''}
       ${o.shop?.allowlisted && o.shop?.trustScore != null ? `<span>Trustpilot ★ ${o.shop.trustScore.toFixed(1)}</span>` : ''}
       ${o.seller ? `<span>Verkäufer: ${esc(o.seller)}</span>` : ''}
-      ${o.shop?.country ? `<span>Sitz: ${esc(o.shop.country)}</span>` : ''}
-      ${o.shop?.withdrawalDays ? `<span>${o.shop.withdrawalDays} Tage Widerruf</span>` : ''}
+      ${checksText(o.shop) ? `<span style="color:var(--brand)">Geprüft: ${esc(checksText(o.shop))}</span>` : `${o.shop?.country ? `<span>Sitz: ${esc(o.shop.country)}</span>` : ''}${o.shop?.withdrawalDays ? `<span>${o.shop.withdrawalDays} Tage Widerruf</span>` : ''}`}
       ${why ? `<span style="color:var(--hot)">${esc(why)}</span>` : ''}
     </div>
     <div class="offer-actions">
@@ -221,6 +244,8 @@ function renderDetail(p) {
       <input type="checkbox" class="switch" id="d-used" ${p.allowUsed ? 'checked' : ''}></label>
     <h3>Angebote (${offers.length})</h3>
     ${offers.length ? offers.map((o) => offerHtml(o, p, o.url === bestUrl)).join('') : '<p class="muted">Noch keine geprüften Angebote.</p>'}
+    ${p.gtin ? `<p class="hint muted">Exakter Abgleich über EAN ${esc(p.gtin)} – andere Shops zählen nur mit genau diesem Artikel.</p>` : ''}
+    ${p.variantHint ? `<p class="hint muted">${esc(p.variantHint)}</p>` : ''}
     ${p.searchSource ? `<p class="hint muted">Gesucht über ${({ google: 'Google', brave: 'Brave', duckduckgo: 'DuckDuckGo' })[p.searchSource] || esc(p.searchSource)}</p>` : ''}
     ${p.searchError ? `<p class="hint muted">Suche: ${esc(p.searchError)}</p>` : ''}
     ${p.excluded?.length ? `<details class="excluded"><summary>Ausgeschlossene Shops (${p.excluded.length})</summary>

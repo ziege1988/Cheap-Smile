@@ -64,9 +64,12 @@ export function analyseImpressum(text, blocked) {
   const address = ADDRESS_RE.test(text);
   const contact = CONTACT_RE.test(text);
   const register = REGISTER_RE.test(text);
-  const country = /deutschland|germany/i.test(text) ? 'DE'
-    : /österreich|oesterreich|austria/i.test(text) ? 'AT'
-    : /schweiz|switzerland/i.test(text) ? 'CH' : null;
+  const COUNTRIES = [['DE', /deutschland|germany/i], ['AT', /österreich|oesterreich|austria/i], ['CH', /schweiz|switzerland/i],
+    ['DK', /dänemark|daenemark|denmark|danmark/i], ['NL', /niederlande|netherlands|nederland/i], ['BE', /belgien|belgium|belgique/i],
+    ['FR', /frankreich|france/i], ['IT', /italien|italy|italia/i], ['ES', /spanien|spain|españa/i], ['PL', /polen|poland|polska/i],
+    ['CZ', /tschechien|czech/i], ['SE', /schweden|sweden|sverige/i], ['LU', /luxemburg|luxembourg/i], ['IE', /irland|ireland/i],
+    ['FI', /finnland|finland|suomi/i], ['GB', /großbritannien|united kingdom|england/i]];
+  const country = COUNTRIES.find(([, re]) => re.test(text))?.[0] || null;
   return { regions, company, address, contact, register, country, complete: company && address && contact };
 }
 
