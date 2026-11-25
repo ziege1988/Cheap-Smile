@@ -18,6 +18,7 @@ function shopSummary(v) {
     country: v.impressum?.country ?? null,
     withdrawalDays: v.returns?.days ?? null,
     notes: v.notes || [],
+    verified: (v.notes || []).some((n) => /bestätigt/.test(n)),
   };
 }
 
@@ -65,7 +66,7 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
     title: ex.title, price: ex.price, shipping: ex.shipping, shippingEstimated: ex.shippingEstimated,
     freeShippingFrom: ex.freeShippingFrom, total: ex.total, currency: ex.currency,
     oldPrice: ex.oldPrice, discountPct: ex.discountPct, condition: ex.condition, available: ex.available,
-    coupons: ex.coupons, returnCost: verdict.returns?.returnCost ?? null,
+    coupons: ex.coupons, returnCost: verdict.returns?.returnCost ?? null, seller: ex.sellerName,
     shop: shopSummary(verdict), manual, fails: 0, checkedAt: Date.now(), firstSeen: Date.now(),
   };
   product.excluded = (product.excluded || []).filter((e) => e.domain !== domain);
@@ -87,7 +88,7 @@ async function refreshOffer(env, product, fetcher, settings, o) {
   Object.assign(o, {
     title: ex.title || o.title, price: ex.price, shipping: ex.shipping, shippingEstimated: ex.shippingEstimated,
     freeShippingFrom: ex.freeShippingFrom, total: ex.total, currency: ex.currency, oldPrice: ex.oldPrice,
-    discountPct: ex.discountPct, condition: ex.condition, available: ex.available, coupons: ex.coupons,
+    discountPct: ex.discountPct, condition: ex.condition, available: ex.available, coupons: ex.coupons, seller: ex.sellerName,
     returnCost: verdict.returns?.returnCost ?? null, shop: shopSummary(verdict), fails: 0, stale: false,
   });
 }
@@ -121,8 +122,9 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
         ...product.offers.map((o) => o.domain),
         ...product.excluded.filter((e) => t - e.at < 7 * DAY).map((e) => e.domain),
       ];
-      const { candidates, error } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains });
+      const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: !product.lastSearchAt || force });
       product.searchError = error || null;
+      product.searchSource = source || null;
       for (const c of candidates.slice(0, MAX_CANDIDATES * 2)) {
         if (c.blocked) { excludeDomain(product, c.domain, ['Auf der Sperrliste'], c.url); continue; }
         await considerCandidate(env, product, fetcher, settings, c.url);
@@ -149,7 +151,7 @@ export function toClient(p) {
   const best = bestOffer(p);
   return {
     id: p.id, name: p.name, image: p.image, wishPrice: p.wishPrice, allowUsed: !!p.allowUsed,
-    createdAt: p.createdAt, lastCheckAt: p.lastCheckAt, lastError: p.lastError, searchError: p.searchError,
+    createdAt: p.createdAt, lastCheckAt: p.lastCheckAt, lastError: p.lastError, searchError: p.searchError, searchSource: p.searchSource,
     best: best ? { ...best, effectiveTotal: effectiveTotal(best) } : null,
     offers: (p.offers || []).map((o) => ({ ...o, effectiveTotal: o.total != null ? effectiveTotal(o) : null })),
     excluded: p.excluded || [],

@@ -60,7 +60,10 @@ function shippingText(o) {
   return `inkl. ${eur(o.shipping)} Versand`;
 }
 const condLabel = (c) => ({ used: 'Gebraucht', refurbished: 'Refurbished', new: 'Neu' }[c] || c);
-const trustText = (s) => (s?.trustScore != null ? `★ ${s.trustScore.toFixed(1)} (${s.trustCount?.toLocaleString('de-DE')})` : s?.allowlisted ? 'bekannter Händler' : '');
+const trustText = (s) => {
+  if (s?.allowlisted) return s.verified ? '✓ geprüfter bekannter Händler' : '✓ bekannter Händler';
+  return s?.trustScore != null ? `★ ${s.trustScore.toFixed(1)} (${s.trustCount?.toLocaleString('de-DE')})` : '';
+};
 
 function relTime(ts) {
   if (!ts) return 'noch nie';
@@ -178,6 +181,8 @@ function offerHtml(o, p, isBest) {
       <span>${condLabel(o.condition)}</span>
       ${o.discountPct ? `<span>−${o.discountPct} % (statt ${eur(o.oldPrice)})</span>` : ''}
       ${o.shop ? `<span>${esc(trustText(o.shop))}</span>` : ''}
+      ${o.shop?.allowlisted && o.shop?.trustScore != null ? `<span>Trustpilot ★ ${o.shop.trustScore.toFixed(1)}</span>` : ''}
+      ${o.seller ? `<span>Verkäufer: ${esc(o.seller)}</span>` : ''}
       ${o.shop?.country ? `<span>Sitz: ${esc(o.shop.country)}</span>` : ''}
       ${o.shop?.withdrawalDays ? `<span>${o.shop.withdrawalDays} Tage Widerruf</span>` : ''}
       ${why ? `<span style="color:var(--hot)">${esc(why)}</span>` : ''}
@@ -211,6 +216,7 @@ function renderDetail(p) {
       <input type="checkbox" class="switch" id="d-used" ${p.allowUsed ? 'checked' : ''}></label>
     <h3>Angebote (${offers.length})</h3>
     ${offers.length ? offers.map((o) => offerHtml(o, p, o.url === bestUrl)).join('') : '<p class="muted">Noch keine geprüften Angebote.</p>'}
+    ${p.searchSource ? `<p class="hint muted">Gesucht über ${({ google: 'Google', brave: 'Brave', duckduckgo: 'DuckDuckGo' })[p.searchSource] || esc(p.searchSource)}</p>` : ''}
     ${p.searchError ? `<p class="hint muted">Suche: ${esc(p.searchError)}</p>` : ''}
     ${p.excluded?.length ? `<details class="excluded"><summary>Ausgeschlossene Shops (${p.excluded.length})</summary>
       ${p.excluded.map((e) => `<div class="ex-item"><b>${esc(e.domain)}</b>${e.reasons.map(esc).join(' · ')}</div>`).join('')}</details>` : ''}

@@ -6,7 +6,7 @@ import { createFetcher, uid, domainOf } from './util.js';
 import { getSettings, saveSettings, getProduct, saveProduct, deleteProduct, allProducts, getSubs, addSub, removeSub } from './store.js';
 import { checkProduct, toClient } from './products.js';
 import { bestOffer, effectiveTotal } from './deal.js';
-import { sendPush } from './push.js';
+import { sendPush, b64urlEncode } from './push.js';
 
 const json = (data, status = 200, env) => new Response(JSON.stringify(data), {
   status,
@@ -32,15 +32,31 @@ function authorized(req, env) {
   return diff === 0;
 }
 
-const vapid = (env) => ({ publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY, subject: env.VAPID_SUBJECT });
+/**
+ * VAPID-Schlüssel: aus Secrets, sonst einmalig automatisch erzeugt und in KV gespeichert.
+ * So muss bei der Einrichtung niemand Schlüssel von Hand erzeugen.
+ */
+export async function getVapid(env) {
+  const subject = env.VAPID_SUBJECT || 'https://github.com/';
+  if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY) return { publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY, subject };
+  let v = await env.DB.get('vapid', 'json');
+  if (!v) {
+    const kp = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const raw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+    const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey);
+    v = { publicKey: b64urlEncode(raw), privateKey: jwk.d };
+    await env.DB.put('vapid', JSON.stringify(v));
+  }
+  return { ...v, subject };
+}
 
 export async function notifyAll(env, alert, fetchImpl = fetch) {
-  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return { sent: 0, error: 'VAPID-Schlüssel fehlen' };
+  const keys = await getVapid(env);
   const subs = await getSubs(env);
   let sent = 0;
   for (const s of subs) {
     try {
-      const r = await sendPush(s, alert, vapid(env), fetchImpl);
+      const r = await sendPush(s, alert, keys, fetchImpl);
       if (r.ok) sent++;
       else if (r.gone) await removeSub(env, s.endpoint);
     } catch (e) { console.log('push error', e?.message); }
@@ -70,8 +86,8 @@ async function handleApi(req, env, ctx, url) {
   const method = req.method;
   const body = ['POST', 'PATCH', 'PUT'].includes(method) ? await req.json().catch(() => ({})) : {};
 
-  if (path === '/api/health') return json({ ok: true, time: Date.now() }, 200, env);
-  if (path === '/api/vapid' && method === 'GET') return json({ publicKey: env.VAPID_PUBLIC_KEY || null }, 200, env);
+  if (path === '/api/health') return json({ ok: true, time: Date.now(), search: env.SERPAPI_KEY ? 'google' : env.BRAVE_API_KEY ? 'brave' : 'duckduckgo', tokenSet: !!env.APP_TOKEN }, 200, env);
+  if (path === '/api/vapid' && method === 'GET') return json({ publicKey: (await getVapid(env)).publicKey }, 200, env);
 
   if (!authorized(req, env)) return json({ error: 'Nicht autorisiert – Zugangsschlüssel in den Einstellungen prüfen.' }, 401, env);
 

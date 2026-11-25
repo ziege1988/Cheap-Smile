@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkShop, analyseReturns, detectRegions, parseTrustpilot } from '../src/shopcheck.js';
+import { checkShop, analyseReturns, detectRegions, parseTrustpilot, lookalikeOf } from '../src/shopcheck.js';
 import { DEFAULT_SETTINGS } from '../src/config.js';
 import { createFetcher } from '../src/util.js';
 import { fakeWeb, trustpilotPage, homePage, impressumDE, impressumCN, widerrufOK } from './helpers.js';
@@ -80,11 +80,37 @@ test('Sperrliste und Fernost-TLD sofort raus, ohne Requests', async () => {
   assert.equal(web.calls.length, 0);
 });
 
-test('Positivliste umgeht Trustpilot-Schwelle', async () => {
-  const w = goodShop('otto.de', { 'https://de.trustpilot.com/review/otto.de': trustpilotPage(2.0, 50000) });
+const ottoImpressum = '<html><body><h1>Impressum</h1><p>Otto (GmbH & Co KG)<br>Werner-Otto-Straße 1-7<br>22179 Hamburg<br>Deutschland</p><p>Telefon: 040 3603 3603, service@otto.de</p><p>Amtsgericht Hamburg HRA 62024</p></body></html>';
+
+test('Bekannter Händler: Trustpilot egal, aber Betreiber im Impressum muss passen', async () => {
+  const w = goodShop('otto.de', { 'https://de.trustpilot.com/review/otto.de': trustpilotPage(2.0, 50000), 'https://otto.de/impressum': ottoImpressum });
   const v = await checkShop('otto.de', createFetcher(fakeWeb(w)), S);
-  assert.equal(v.ok, true);
+  assert.equal(v.ok, true, v.reasons.join());
   assert.equal(v.allowlisted, true);
+  assert.ok(v.notes.some((n) => /Betreiber im Impressum bestätigt/.test(n)));
+
+  const fremd = goodShop('otto.de', { 'https://otto.de/impressum': impressumDE });
+  const v2 = await checkShop('otto.de', createFetcher(fakeWeb(fremd)), S);
+  assert.equal(v2.ok, false);
+  assert.match(v2.reasons.join(), /Echtheit fraglich/);
+});
+
+test('Bekannter Händler mit Bot-Schutz: Originaldomain genügt', async () => {
+  const w = goodShop('amazon.de', { 'https://amazon.de/': { status: 503 } });
+  const v = await checkShop('amazon.de', createFetcher(fakeWeb(w)), S);
+  assert.equal(v.ok, true);
+  assert.ok(v.notes.some((n) => /Bot-Schutz/.test(n)));
+});
+
+test('Nachahmer-Domains bekannter Händler werden ohne Requests ausgeschlossen', async () => {
+  const web = fakeWeb({});
+  for (const d of ['otto-sale.de', 'amaz0n.de', 'mediamartk.de', 'media-markt-outlet.de', 'otto.shop', 'saturn-deals.store']) {
+    const v = await checkShop(d, createFetcher(web), S);
+    assert.equal(v.ok, false, d);
+    assert.match(v.reasons[0], /Nachahmer-Domain/, d);
+  }
+  assert.equal(web.calls.length, 0);
+  for (const d of ['otto.at', 'lotto24.de', 'muster.de', 'apple-zubehoer.de']) assert.equal(lookalikeOf(d, S.allowlist), null, d);
 });
 
 test('Hilfsfunktionen', () => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateAlerts } from '../src/deal.js';
+import { evaluateAlerts, applyOfferRules, bestOffer } from '../src/deal.js';
 import { DEFAULT_SETTINGS } from '../src/config.js';
 
 const offer = (total, extra = {}) => ({ domain: 'muster.de', price: total, shipping: 0, total, condition: 'new', available: true, currency: 'EUR', coupons: [], ...extra });
@@ -30,4 +30,16 @@ test('Gebrauchtes Angebot zählt nur, wenn erlaubt', () => {
   assert.equal(evaluateAlerts(p, DEFAULT_SETTINGS), null);
   p.allowUsed = true;
   assert.match(evaluateAlerts(p, DEFAULT_SETTINGS).body, /gebraucht/);
+});
+
+test('Marktplatz: Fernost-Drittanbieter fliegt raus, deutscher Händler bleibt', () => {
+  const p = { id: 'd', name: 'X', offers: [
+    offer(80, { domain: 'amazon.de', seller: 'Shenzhen Xinda Technology Co., Ltd' }),
+    offer(85, { domain: 'otto.de', seller: 'Musterhandel GmbH' }),
+    offer(95, { domain: 'amazon.de', seller: 'Amazon' }),
+  ] };
+  applyOfferRules(p, DEFAULT_SETTINGS);
+  assert.match(p.offers[0].excludedReason, /Fernost/);
+  assert.equal(p.offers[1].excludedReason, undefined);
+  assert.equal(bestOffer(p).domain, 'otto.de');
 });

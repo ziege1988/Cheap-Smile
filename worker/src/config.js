@@ -34,7 +34,7 @@ export const DEFAULT_SETTINGS = {
     'computeruniverse.net', 'proshop.de', 'coolblue.de', 'bol.com', 'apple.com',
     'bergfreunde.de', 'zalando.de', 'douglas.de', 'dm.de', 'rossmann.de', 'obi.de',
     'hornbach.de', 'bauhaus.info', 'ikea.com', 'decathlon.de', 'lidl.de', 'aldi-onlineshop.de',
-    'rebuy.de', 'backmarket.de', 'asgoodasnew.de',
+    'rebuy.de', 'backmarket.de', 'asgoodasnew.de', 'kaufland.de', 'ebay.de',
   ],
 
   // Sperrliste: Fernost-Marktplätze, bekannte Billig-Plattformen
@@ -45,6 +45,9 @@ export const DEFAULT_SETTINGS = {
     'lazada.com', 'tmall.com', 'taobao.com', 'jd.com',
   ],
 };
+
+// Marktplätze: hier verkaufen auch Drittanbieter -> Verkäufer wird zusätzlich geprüft
+export const MARKETPLACES = ['amazon.de', 'otto.de', 'kaufland.de', 'ebay.de', 'galaxus.de', 'conrad.de', 'mediamarkt.de', 'saturn.de', 'backmarket.de', 'bol.com', 'decathlon.de', 'zalando.de'];
 
 // Keine Shops, sondern Vergleichsportale, Magazine, Foren, Videos …
 export const NON_SHOP_DOMAINS = [

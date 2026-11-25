@@ -18,10 +18,13 @@ id = "HIER_KV_ID_EINTRAGEN"
 # Herkunft der App (GitHub-Pages-URL) für CORS, z. B. "https://ziege1988.github.io"
 ALLOWED_ORIGIN = "*"
 SUBREQUEST_BUDGET = "40"
+# Absender-Kennung für Web Push (Pflichtangabe gegenüber Apple)
+VAPID_SUBJECT = "https://github.com/ziege1988/Cheap-Smile"
+# Google-Suchen pro Monat (SerpApi Free: 250)
+SERPAPI_MONTHLY_LIMIT = "240"
 
-# Geheimnisse (nicht hier eintragen, sondern per `wrangler secret put` bzw. GitHub-Secrets):
-#   APP_TOKEN          Zugangsschlüssel der App
-#   VAPID_PUBLIC_KEY   Web-Push öffentlicher Schlüssel   (npm run vapid)
-#   VAPID_PRIVATE_KEY  Web-Push privater Schlüssel
-#   VAPID_SUBJECT      z. B. https://ziege1988.github.io/Cheap-Smile/
-#   BRAVE_API_KEY      optional, bessere Websuche
+# Geheimnisse (werden vom GitHub-Workflow aus den Repository-Secrets gesetzt):
+#   APP_TOKEN      Zugangsschlüssel (Passwort) der App            – Pflicht
+#   SERPAPI_KEY    Google-Suche über serpapi.com                  – empfohlen
+#   BRAVE_API_KEY  alternative Suche                              – optional
+# Web-Push-Schlüssel (VAPID) erzeugt der Worker beim ersten Start selbst.

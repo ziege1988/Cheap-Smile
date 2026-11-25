@@ -26,7 +26,12 @@ Ein Shop wird nur vorgeschlagen, wenn er **alle** Prüfungen besteht. Ausgeschlo
 | Domain-Alter | < 1 Jahr → raus (sofern die Registry das Alter per RDAP verrät) |
 | Fake-Preis | Preis < 55 % des Marktpreises anderer Shops → „Fake-Shop-Verdacht“ |
 
-**Positivliste:** Große Händler wie Amazon, MediaMarkt oder Otto haben auf Trustpilot oft schlechte Werte, obwohl sie seriös sind. Für diese Händler gilt daher die Trustpilot-Schwelle nicht. Fernost-Sitz und Sperrliste gelten trotzdem. Die Liste lässt sich in den Einstellungen bearbeiten oder leeren.
+**Bekannte Händler (Positivliste, z. B. Otto, MediaMarkt, Amazon):** Große Händler haben auf Trustpilot oft schlechte Werte, obwohl sie seriös sind. Deshalb gilt für sie die Trustpilot-Schwelle nicht. Stattdessen wird geprüft, ob es wirklich der **echte Händler** ist:
+- **Originaldomain:** nur exakt `otto.de` (bzw. echte Subdomains) zählt.
+- **Nachahmer-Domains** wie `otto-sale.de`, `amaz0n.de`, `mediamartk.de`, `media-markt-outlet.de` oder `saturn-deals.store` werden als Fake-Shop-Verdacht sofort ausgeschlossen.
+- **Betreiber:** Das Impressum muss die Marke als Betreiber nennen (z. B. „Otto (GmbH & Co KG)“). Blockiert der Shop automatische Abrufe, genügt die Originaldomain.
+- **Fernost** (Sitz oder Rücksendeadresse) schließt auch bekannte Händler aus.
+- **Marktplatz-Verkäufer:** Auf Marktplätzen (Amazon, Otto, Kaufland, eBay …) wird der Drittanbieter angezeigt. Verkäufer aus Fernost werden ausgeschlossen.
 
 ## Architektur (komplett kostenlos)
 
@@ -41,51 +46,21 @@ Cloudflare Worker (Free)                    ← worker/
   └─ Web Push (VAPID) direkt an Apple
 ```
 
-- **Websuche:** DuckDuckGo (ohne Schlüssel). Optional die Brave Search API mit kostenlosem Kontingent (Secret `BRAVE_API_KEY`), das liefert verlässlichere Ergebnisse.
+- **Websuche:** **Google** über SerpApi (Secret `SERPAPI_KEY`, 250 Suchen/Monat kostenlos, gleichmäßig über den Monat verteilt). Rückfallebene: DuckDuckGo ohne Schlüssel, optional Brave (`BRAVE_API_KEY`). Die offizielle Google Custom Search API nimmt keine neuen Nutzer mehr an und wird zum 01.01.2027 abgeschaltet. Google direkt abzufragen blockiert Google und verstößt gegen die Nutzungsbedingungen.
 - **Preise:** werden aus den schema.org-Produktdaten der Shopseite gelesen (wie bei Google Shopping), ersatzweise aus Meta-Tags bzw. dem Seitentext.
 - **Free-Tarif-Grenzen:** 50 Abrufe pro Worker-Lauf. Der Cron arbeitet deshalb in Portionen; bei vielen Produkten dauert ein kompletter Durchlauf mehrere Läufe.
 
-## Einrichtung (einmalig, ca. 20 Minuten)
+## Einrichtung
 
-### 1. Cloudflare (kostenloses Konto)
-```bash
-cd worker
-npm install
-npx wrangler login
-npx wrangler kv namespace create DB     # → ausgegebene "id" notieren
-npm run vapid                           # → VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY notieren
-npm run token                           # → Zugangsschlüssel (APP_TOKEN) notieren
-```
-Außerdem im Cloudflare-Dashboard einen **API-Token** mit der Vorlage „Edit Cloudflare Workers“ erstellen und die **Account-ID** notieren.
+👉 **[ANLEITUNG.md](ANLEITUNG.md) – Schritt für Schritt, ohne Programmierkenntnisse.**
 
-### 2. GitHub-Repository einstellen
-*Settings → Secrets and variables → Actions*
-
-| Typ | Name | Wert |
-|---|---|---|
-| Secret | `CLOUDFLARE_API_TOKEN` | API-Token aus Schritt 1 |
-| Secret | `CLOUDFLARE_ACCOUNT_ID` | Account-ID |
-| Secret | `APP_TOKEN` | Zugangsschlüssel |
-| Secret | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | aus `npm run vapid` |
-| Secret | `VAPID_SUBJECT` | URL der App, z. B. `https://<user>.github.io/Cheap-Smile/` |
-| Variable | `KV_NAMESPACE_ID` | KV-ID aus Schritt 1 |
-| Variable | `API_BASE` | Worker-URL, z. B. `https://cheap-smile-api.<subdomain>.workers.dev` (nach dem ersten Deployment bekannt) |
-| Variable | `ALLOWED_ORIGIN` | optional, z. B. `https://<user>.github.io` |
-
-*Settings → Pages → Source: „GitHub Actions“.* Hinweis: Mit dem kostenlosen GitHub-Tarif funktioniert Pages nur bei **öffentlichen** Repositories. Der App-Code ist dann öffentlich; deine Daten und Schlüssel liegen nicht im Code, sondern im Worker bzw. auf deinem Gerät.
-
-Nach einem Push auf `main` veröffentlichen die beiden Workflows automatisch App und API.
-
-Optional bessere Suche: `npx wrangler secret put BRAVE_API_KEY`
-
-### 3. iPhone
-1. Die Pages-URL in **Safari** öffnen → Teilen → **„Zum Home-Bildschirm“**
-2. App vom Home-Bildschirm öffnen → Einstellungen: API-Adresse + Zugangsschlüssel eintragen
-3. **Push aktivieren** → „Test senden“ (Voraussetzung: iOS 16.4 oder neuer)
+Kurzfassung: Cloudflare-Konto + API-Token, optional SerpApi-Schlüssel, 4 Repository-Secrets
+(`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `APP_TOKEN`, `SERPAPI_KEY`), Pages auf „GitHub Actions“,
+nach `main` mergen. KV-Speicher und Web-Push-Schlüssel legt das System selbst an.
 
 ## Entwicklung
 ```bash
-cd worker && npm test     # 27 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
+cd worker && npm test     # 35 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
 npx wrangler dev          # API lokal
 ```
 

@@ -115,3 +115,12 @@ test('Produkt per Link anlegen übernimmt Titel', async () => {
   assert.equal(data.name, 'Sony WH-1000XM5 Kopfhörer Schwarz');
   assert.ok(data.offers.some((o) => o.manual && o.domain === 'muster.de'));
 });
+
+test('Push-Schlüssel werden automatisch erzeugt, wenn keine Secrets gesetzt sind', async () => {
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'x' };
+  const res = await worker.fetch(new Request('https://api.test/api/vapid'), env, { waitUntil() {} });
+  const { publicKey } = await res.json();
+  assert.equal(publicKey.length, 87); // 65 Bytes base64url
+  const again = await (await worker.fetch(new Request('https://api.test/api/vapid'), env, { waitUntil() {} })).json();
+  assert.equal(again.publicKey, publicKey, 'stabil gespeichert');
+});

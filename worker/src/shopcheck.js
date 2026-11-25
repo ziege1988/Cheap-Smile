@@ -125,7 +125,10 @@ export async function checkShop(domain, fetcher, settings) {
   if (/\.(cn|hk|mo|tw|vn|th|my|id|ph|kh)$/i.test(domain)) { fail('Domain-Endung aus Fernost'); return res; }
   if (domainMatches(domain, settings.allowlist)) {
     res.allowlisted = true;
-    res.notes.push('Bekannter Händler (Positivliste)');
+    res.notes.push('Bekannter Händler – Originaldomain bestätigt');
+  } else {
+    const fake = lookalikeOf(domain, settings.allowlist);
+    if (fake) { fail(`Nachahmer-Domain von ${fake} (Fake-Shop-Verdacht)`); return res; }
   }
 
   // 1) Trustpilot
@@ -151,6 +154,7 @@ export async function checkShop(domain, fetcher, settings) {
   const home = await fetchText(fetcher, `https://${domain}/`);
   if (!home.ok) {
     if (!res.allowlisted) { res.retryable = true; fail(`Startseite nicht erreichbar (HTTP ${home.status || 'Fehler'})`); }
+    else res.notes.push('Impressum nicht abrufbar (Bot-Schutz) – Echtheit über Originaldomain bestätigt');
     return res;
   }
   const links = extractLinks(home.text, home.url);
@@ -164,6 +168,13 @@ export async function checkShop(domain, fetcher, settings) {
     res.impressum = { url: impLink.href, ...analyseImpressum(text, settings.blockedRegions) };
     if (res.impressum.regions.length) fail(`Firmensitz in Fernost (${res.impressum.regions.join('/')})`);
     else if (!res.allowlisted && !res.impressum.complete) fail('Impressum unvollständig (Firma/Adresse/Kontakt fehlt)');
+    else if (res.allowlisted && text) {
+      // Bekannter Händler: Betreiber im Impressum muss zur Marke passen
+      const brand = brandOf(domain)?.split('-')[0];
+      if (brand && !new RegExp(brand.replace(/[^a-z0-9]/g, '.?'), 'i').test(text.replace(/\s+/g, ''))) {
+        fail(`Impressum nennt nicht ${brand} als Betreiber – Echtheit fraglich`);
+      } else if (brand) res.notes.push('Betreiber im Impressum bestätigt');
+    }
   }
   if (!res.ok) return res;
 
@@ -175,7 +186,10 @@ export async function checkShop(domain, fetcher, settings) {
     const ret = await fetchText(fetcher, retLink.href);
     const text = ret.ok ? htmlToText(ret.text) : '';
     res.returns = { url: retLink.href, ...analyseReturns(text, settings.blockedRegions, settings) };
-    if (!res.allowlisted) for (const i of res.returns.issues) fail(i);
+    for (const i of res.returns.issues) {
+      // Bei bekannten Händlern zählt nur die harte Regel (Rücksendung nach Fernost)
+      if (!res.allowlisted || /Rücksendung nach/.test(i)) fail(i);
+    }
   }
   if (!res.ok) return res;
 
@@ -187,6 +201,54 @@ export async function checkShop(domain, fetcher, settings) {
     fail(`Domain erst ${res.ageDays} Tage alt`);
   }
   return res;
+}
+
+/** Markenname aus der Domain: "mediamarkt.de" -> "mediamarkt" */
+export function brandOf(domain) {
+  const parts = String(domain).toLowerCase().split('.');
+  const label = parts.length > 2 && parts[parts.length - 2].length <= 3 ? parts[parts.length - 3] : parts[parts.length - 2];
+  return label || null;
+}
+
+// Optimal String Alignment (Tippfehler inkl. vertauschter Buchstaben)
+function osa(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const c = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// Marken, die auch normale Wörter/Namen sind -> nur Tippfehler-Regel, keine Wort-Regel
+const SUSPICIOUS_TLD = /\.(shop|store|online|top|xyz|site|club|vip|sale|buzz|icu|cfd|sbs|bond|live|life|fun|pro|website|space|click|cyou|monster)$/i;
+const GENERIC_BRANDS = new Set(['apple', 'douglas', 'expert', 'bader', 'baur', 'jacob', 'conrad', 'thomann', 'proshop', 'zalando', 'coolblue']);
+
+/**
+ * Erkennt Nachahmer-Domains bekannter Händler, z. B. "otto-sale.de", "amaz0n-de.com",
+ * "mediamartk.de". Gibt die echte Domain zurück oder null.
+ */
+export function lookalikeOf(domain, allowlist) {
+  const label = brandOf(domain);
+  if (!label) return null;
+  const norm = (x) => x.replace(/0/g, 'o').replace(/1/g, 'l').replace(/3/g, 'e').replace(/5/g, 's');
+  const tokensOfLabel = label.split(/[-_]+/).map(norm);
+  const host = norm(domain.replace(/\.[a-z]+$/, '')).split(/[^a-z]+/);
+  for (const real of allowlist) {
+    const brand = brandOf(real);
+    if (!brand || brand.length < 4 || domain === real) continue;
+    // Gleicher Name, andere Endung: nur bei typischen Fake-Endungen verdächtig (otto.at ist echt, otto-de.shop nicht)
+    if (norm(label) === brand && (label !== brand || SUSPICIOUS_TLD.test(domain))) return real; // amaz0n.de, otto.shop
+    if (!GENERIC_BRANDS.has(brand) && ((tokensOfLabel.length > 1 && tokensOfLabel.includes(brand)) || (host.length > 1 && host.includes(brand)))) return real; // otto-sale.de
+    if (brand.length >= 5 && osa(norm(label), brand) === 1) return real;      // mediamartk.de
+    const joined = norm(label).replace(/[^a-z]/g, '');
+    if (brand.length >= 6 && !GENERIC_BRANDS.has(brand) && joined !== brand && joined.includes(brand)) return real; // media-markt-outlet.de
+  }
+  return null;
 }
 
 /** Mit Cache in KV. */

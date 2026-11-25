@@ -24,32 +24,79 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: worker } }
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm ci
-      - name: KV-ID und erlaubte Herkunft einsetzen
-        env:
-          KV_ID: ${{ vars.KV_NAMESPACE_ID }}
-          ORIGIN: ${{ vars.ALLOWED_ORIGIN }}
-        run: |
-          test -n "$KV_ID" || { echo "::error::Repository-Variable KV_NAMESPACE_ID fehlt (siehe README)"; exit 1; }
-          sed -i "s/HIER_KV_ID_EINTRAGEN/${KV_ID}/" wrangler.toml
-          if [ -n "$ORIGIN" ]; then sed -i "s#ALLOWED_ORIGIN = \"\\*\"#ALLOWED_ORIGIN = \"${ORIGIN}\"#" wrangler.toml; fi
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: worker
-          wranglerVersion: 4.168.0
-          secrets: |
-            APP_TOKEN
-            VAPID_PUBLIC_KEY
-            VAPID_PRIVATE_KEY
-            VAPID_SUBJECT
+
+      - name: Voraussetzungen prüfen
         env:
           APP_TOKEN: ${{ secrets.APP_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          [ -n "$APP_TOKEN" ] || missing="$missing APP_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::Fehlende Repository-Secrets:$missing – siehe ANLEITUNG.md, Schritt 3"
+            exit 1
+          fi
+
+      - name: KV-Speicher finden oder automatisch anlegen
+        run: |
+          find_id() { npx wrangler kv namespace list 2>/dev/null | node -e '
+            let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+              try{const a=JSON.parse(s.slice(s.indexOf("[")));const n=a.find(x=>/cheap-smile-db$/.test(x.title));if(n)console.log(n.id)}catch{}})'; }
+          ID="$(find_id)"
+          if [ -z "$ID" ]; then
+            echo "Lege KV-Speicher 'cheap-smile-db' an …"
+            npx wrangler kv namespace create cheap-smile-db
+            ID="$(find_id)"
+          fi
+          test -n "$ID" || { echo "::error::KV-Speicher konnte nicht angelegt werden (Rechte des API-Tokens prüfen)"; exit 1; }
+          echo "KV-ID: $ID"
+          sed -i "s/HIER_KV_ID_EINTRAGEN/${ID}/" wrangler.toml
+
+      - name: Erlaubte Herkunft (optional)
+        env:
+          ORIGIN: ${{ vars.ALLOWED_ORIGIN }}
+        run: |
+          if [ -n "$ORIGIN" ]; then sed -i "s#ALLOWED_ORIGIN = \"\\*\"#ALLOWED_ORIGIN = \"${ORIGIN}\"#" wrangler.toml; fi
+
+      - name: Worker veröffentlichen
+        id: deploy
+        run: |
+          npx wrangler deploy | tee deploy.log
+          URL="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' deploy.log | head -1)"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Geheimnisse setzen
+        env:
+          APP_TOKEN: ${{ secrets.APP_TOKEN }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
-          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+        run: |
+          # Nur gesetzte Secrets übertragen (leere werden übersprungen)
+          node -e '
+            const names = ["APP_TOKEN","SERPAPI_KEY","BRAVE_API_KEY","VAPID_PUBLIC_KEY","VAPID_PRIVATE_KEY"];
+            const o = {}; for (const n of names) if (process.env[n]) o[n] = process.env[n];
+            require("fs").writeFileSync("secrets.json", JSON.stringify(o));
+            console.log("Übertrage:", Object.keys(o).join(", "));'
+          npx wrangler secret bulk secrets.json
+          rm -f secrets.json
+
+      - name: Zusammenfassung
+        run: |
+          {
+            echo "## ✅ Cheap Smile API ist online"
+            echo ""
+            echo "**API-Adresse für die App:** \`${{ steps.deploy.outputs.url }}\`"
+            echo ""
+            echo "Diese Adresse in der App unter ⚙️ Einstellungen → API-Adresse eintragen."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,18 @@
 // Bestpreis-Ermittlung, Fake-Preis-Filter und Push-Entscheidungen.
 
-import { median, round2, DAY } from './util.js';
+import { median, round2, DAY, domainMatches } from './util.js';
+import { REGION_PATTERNS, MARKETPLACES } from './config.js';
+
+/** Drittanbieter auf Marktplätzen: Fernost-Verkäufer ausschließen. */
+export function sellerIssue(o, settings) {
+  if (!o.seller || !domainMatches(o.domain, MARKETPLACES)) return null;
+  const s = o.seller;
+  const regions = (settings.blockedRegions || []).filter((c) => REGION_PATTERNS[c]?.test(s));
+  if (regions.length || /co\.?,?\s*ltd|trading\s+co|technology\s+co|\bltd\.?\s*$/i.test(s)) {
+    return `Marktplatz-Verkäufer „${s}“ vermutlich aus Fernost`;
+  }
+  return null;
+}
 
 /** Angebote, die für dieses Produkt zählen (Zustand, Verfügbarkeit, Ausschlüsse). */
 export function eligibleOffers(product) {
@@ -35,7 +47,11 @@ export function effectiveTotal(o) {
 export function applyOfferRules(product, settings) {
   const offers = product.offers || [];
   for (const o of offers) {
-    if (o.excludedReason?.startsWith('Preis') || o.excludedReason?.startsWith('Rücksende')) delete o.excludedReason;
+    if (/^(Preis|Rücksende|Marktplatz)/.test(o.excludedReason || '')) delete o.excludedReason;
+  }
+  for (const o of offers) {
+    const si = sellerIssue(o, settings);
+    if (si) o.excludedReason = si;
   }
   for (const o of offers) {
     if (o.returnCost != null && o.price && o.returnCost / o.price > settings.maxReturnCostRatio) {
