@@ -35,6 +35,9 @@ async function api(path, { method = 'GET', body } = {}) {
 // ---------- UI-Helfer ----------
 function toast(msg, ms = 2200) {
   const t = $('#toast');
+  // Offene Fenster (dialog) liegen über allem – Meldung dort hinein verschieben, sonst ist sie unsichtbar
+  const host = document.querySelector('dialog[open]') || document.body;
+  if (t.parentElement !== host) host.append(t);
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toast._t);
@@ -385,19 +388,20 @@ function b64ToBytes(b64) {
 
 async function enablePush() {
   if (!pushSupported()) {
-    toast(isStandalone() ? 'Push wird auf diesem Gerät nicht unterstützt (iOS 16.4+ nötig).' : 'Erst zum Home-Bildschirm hinzufügen, dann Push aktivieren.', 4500);
+    pushInfo(isStandalone() ? 'Push wird auf diesem Gerät nicht unterstützt (iOS 16.4+ nötig).' : 'Erst über Teilen → „Zum Home-Bildschirm“ installieren und die App von dort öffnen.', false);
     return;
   }
   const perm = await Notification.requestPermission();
-  if (perm !== 'granted') { toast('Benachrichtigungen wurden nicht erlaubt.', 3500); return; }
+  if (perm !== 'granted') { pushInfo('Benachrichtigungen wurden nicht erlaubt. iPhone-Einstellungen → Mitteilungen → Cheap Smile → Erlauben.', false); return; }
   const { publicKey } = await api('/api/vapid');
-  if (!publicKey) { toast('Server hat keinen VAPID-Schlüssel.', 3500); return; }
+  if (!publicKey) { pushInfo('Server hat keinen Push-Schlüssel.', false); return; }
   const reg = await navigator.serviceWorker.ready;
   let sub = await reg.pushManager.getSubscription();
   if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) });
   await api('/api/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
   toast('Push aktiviert 🎉');
-  updatePushState();
+  await updatePushState();
+  pushInfo('Push ist auf diesem Gerät aktiv ✓ – jetzt „Test senden“ tippen.');
   updateBanner();
 }
 
@@ -410,12 +414,38 @@ async function updatePushState() {
   $('#btn-push').textContent = sub ? 'Push erneut verbinden' : 'Push aktivieren';
 }
 
-$('#btn-push').onclick = () => enablePush().catch((e) => toast(e.message, 4000));
-$('#btn-test-push').onclick = async () => {
+function pushInfo(msg, ok = true) {
+  const el = $('#push-state');
+  el.textContent = msg;
+  el.style.color = ok ? '' : 'var(--hot)';
+}
+
+$('#btn-push').onclick = async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try { await enablePush(); } catch (err) { pushInfo(`Fehler: ${err.message}`, false); toast(err.message, 4000); }
+  finally { btn.disabled = false; }
+};
+$('#btn-test-push').onclick = async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Sende…';
   try {
     const r = await api('/api/test-push', { method: 'POST' });
-    toast(r.error ? r.error : `Test gesendet an ${r.sent}/${r.total} Gerät(e)`, 3500);
-  } catch (e) { toast(e.message, 3500); }
+    let msg;
+    if (r.error) msg = r.error;
+    else if (!r.total) msg = 'Noch kein Gerät für Push angemeldet – zuerst „Push aktivieren“ tippen.';
+    else if (!r.sent) msg = `Senden fehlgeschlagen (0 von ${r.total}). Bitte „Push erneut verbinden“ tippen.`;
+    else msg = `Test gesendet an ${r.sent} von ${r.total} Gerät(en) – die Mitteilung kommt in wenigen Sekunden.`;
+    pushInfo(msg, !!r.sent);
+    toast(msg, 4000);
+  } catch (err) {
+    pushInfo(`Fehler: ${err.message}`, false);
+    toast(err.message, 4000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Test senden';
+  }
 };
 
 async function updateBanner() {
