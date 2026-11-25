@@ -127,6 +127,8 @@ In der Kachel:
 | Rotes ❌ bei „API veröffentlichen“ | Den Lauf anklicken und die rote Meldung lesen. Meist ist ein Secret falsch geschrieben oder fehlt (Schritt 5). Danach im Lauf oben rechts auf **„Re-run all jobs“** klicken. |
 | „KV-Speicher konnte nicht angelegt werden“ | Der API-Token hat zu wenig Rechte. Lege ihn neu mit der Vorlage **„Edit Cloudflare Workers“** an (Schritt 2) und ersetze das Secret. |
 | Rotes ❌ bei „App veröffentlichen“ | Schritt 6 prüfen (Source = GitHub Actions), dann **„Re-run all jobs“**. |
+| „App veröffentlichen“ bricht sofort ab (ohne Protokoll) | **Settings → Environments → github-pages → Deployment branches**: Regel **`main`** hinzufügen. |
+| „workers.dev subdomain“-Fehler | Bei Cloudflare unter **Workers & Pages** einmalig eine Subdomain festlegen (Schritt 1.4). |
 | App meldet „Nicht autorisiert“ | Das Passwort in der App stimmt nicht mit `APP_TOKEN` überein. Groß-/Kleinschreibung beachten. |
 | „Push aktivieren“ geht nicht | Die App muss vom **Home-Bildschirm** geöffnet sein, nicht in Safari. Außerdem iOS 16.4+ und iPhone-Einstellungen → Mitteilungen → Cheap Smile → Erlauben. |
 | Keine Angebote gefunden | Kachel antippen → „Ausgeschlossene Shops“ zeigt den Grund. Alternativ das Produkt **per Link** von einem Shop deiner Wahl anlegen. |
