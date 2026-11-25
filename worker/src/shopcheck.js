@@ -9,6 +9,7 @@
 import { REGION_PATTERNS, SHOP_CACHE_DAYS } from './config.js';
 import { fetchText, extractLinks, htmlToText, domainMatches, parsePrice, DAY, BudgetExceeded } from './util.js';
 import { extractJsonLd } from './extract.js';
+import { trustpilotViaGoogle } from './search.js';
 
 export function detectRegions(text, blocked) {
   const hits = [];
@@ -52,7 +53,7 @@ function pickLink(links, re, domain) {
   return own.find((l) => re.test(l.text)) || own.find((l) => re.test(l.href)) || null;
 }
 
-const COMPANY_RE = /\b(gmbh|ag|ug|e\.\s?k\.|kg|ohg|gbr|e\.\s?v\.|ltd\.?|limited|b\.v\.|s\.r\.l\.|sarl|sas|s\.a\.|a\/s|ab|oy|inc\.?|llc|co\.\s?,?\s?ltd|einzelunternehm|inhaber|geschäftsführer|geschaeftsfuehrer|vertreten durch)\b/i;
+const COMPANY_RE = /\b(gmbh|ag|ug|e\.\s?k\.|kg|ohg|gbr|e\.\s?v\.|ltd\.?|limited|b\.v\.|s\.r\.l\.|sarl|sas|s\.a\.|a\/s|ab|oy|inc\.?|llc|co\.\s?,?\s?ltd|einzelunternehm\w*|inhaber\w*|geschäftsführer\w*|geschaeftsfuehrer\w*|vertreten durch)(?=\W|$)/i;
 const ADDRESS_RE = /\b(?:\d{4,5}\s+[A-ZÄÖÜ][a-zäöüß]+|D-\d{5}|A-\d{4}|CH-\d{4})|(?:straße|strasse|str\.|weg|platz|allee|gasse|ring)\s*\d+/i;
 const CONTACT_RE = /[\w.+-]+@[\w-]+\.[\w.]+|(?:tel|telefon|phone|fon)\.?\s*:?\s*[+\d(]/i;
 const REGISTER_RE = /(handelsregister|registergericht|hrb|hra|ust-?id|umsatzsteuer|vat|kvk|company number|firmenbuch)/i;
@@ -117,7 +118,7 @@ export async function rdapAgeDays(fetcher, domain) {
  * Vollständige Prüfung (ohne Cache).
  * @returns {{domain, ok, reasons: string[], notes: string[], trustpilot, impressum, returns, ageDays, checkedAt}}
  */
-export async function checkShop(domain, fetcher, settings) {
+export async function checkShop(domain, fetcher, settings, env = {}) {
   const res = { domain, ok: true, reasons: [], notes: [], trustpilot: null, impressum: null, returns: null, ageDays: null, allowlisted: false, checkedAt: Date.now() };
   const fail = (r) => { res.ok = false; res.reasons.push(r); };
 
@@ -131,21 +132,31 @@ export async function checkShop(domain, fetcher, settings) {
     if (fake) { fail(`Nachahmer-Domain von ${fake} (Fake-Shop-Verdacht)`); return res; }
   }
 
-  // 1) Trustpilot
-  const tp = await fetchText(fetcher, `https://de.trustpilot.com/review/${domain}`, { maxBytes: 800_000 });
+  // 1) Trustpilot: direkt (zwei Adressen), sonst über Google (SerpApi)
+  let tp = await fetchText(fetcher, `https://de.trustpilot.com/review/${domain}`, { maxBytes: 800_000 });
+  if (!tp.ok && tp.status !== 404) tp = await fetchText(fetcher, `https://www.trustpilot.com/review/${domain}`, { maxBytes: 800_000 });
   res.trustpilot = tp.ok ? parseTrustpilot(tp.text) : null;
-  const tpUnreachable = !tp.ok && tp.status !== 404;
+  let tpUnknown = !tp.ok && tp.status !== 404; // blockiert/Fehler: nichts bekannt
+  if (tpUnknown && env.SERPAPI_KEY && env.DB) {
+    const g = await trustpilotViaGoogle(fetcher, env, domain);
+    if (g?.score != null) { res.trustpilot = g; tpUnknown = false; res.notes.push('Trustpilot-Bewertung über Google ermittelt'); }
+  }
   if (!res.allowlisted) {
-    if (tpUnreachable) {
-      res.retryable = true;
-      fail(`Trustpilot nicht erreichbar (HTTP ${tp.status || 'Fehler'}) – neuer Versuch später`);
+    if (tpUnknown) {
+      if (settings.allowWithoutTrustpilotData) {
+        res.strict = true;
+        res.notes.push('Trustpilot nicht prüfbar – strengere Prüfung von Impressum, Rückgabe und Domain');
+      } else {
+        res.retryable = true;
+        fail(`Trustpilot nicht erreichbar (HTTP ${tp.status || 'Fehler'}) – neuer Versuch später`);
+      }
     } else if (!res.trustpilot) {
       if (settings.requireTrustpilot) fail('Kein Trustpilot-Profil gefunden');
       else res.notes.push('Kein Trustpilot-Profil');
     } else {
       const { score, count } = res.trustpilot;
       if (score < settings.minTrustScore) fail(`Trustpilot ${score.toFixed(1)} (< ${settings.minTrustScore})`);
-      if (count < settings.minReviewCount) fail(`Nur ${count} Trustpilot-Bewertungen`);
+      if (count != null && count < settings.minReviewCount) fail(`Nur ${count} Trustpilot-Bewertungen`);
     }
   }
   if (!res.ok) return res; // weitere Requests sparen
@@ -168,6 +179,7 @@ export async function checkShop(domain, fetcher, settings) {
     res.impressum = { url: impLink.href, ...analyseImpressum(text, settings.blockedRegions) };
     if (res.impressum.regions.length) fail(`Firmensitz in Fernost (${res.impressum.regions.join('/')})`);
     else if (!res.allowlisted && !res.impressum.complete) fail('Impressum unvollständig (Firma/Adresse/Kontakt fehlt)');
+    else if (res.strict && !res.impressum.register) fail('Ohne Trustpilot-Daten: Impressum ohne Handelsregister/USt-ID');
     else if (res.allowlisted && text) {
       // Bekannter Händler: Betreiber im Impressum muss zur Marke passen
       const brand = brandOf(domain)?.split('-')[0];
@@ -200,6 +212,7 @@ export async function checkShop(domain, fetcher, settings) {
   if (res.ageDays != null && res.ageDays < settings.minDomainAgeDays && !res.allowlisted) {
     fail(`Domain erst ${res.ageDays} Tage alt`);
   }
+  if (res.strict && res.ok && res.returns && !res.returns.hasWithdrawal) fail('Ohne Trustpilot-Daten: keine Widerrufsbelehrung');
   return res;
 }
 
@@ -253,14 +266,14 @@ export function lookalikeOf(domain, allowlist) {
 
 /** Mit Cache in KV. */
 export async function getShopVerdict(env, domain, fetcher, settings, { force = false } = {}) {
-  const key = `shop:${domain}`;
+  const key = `shop2:${domain}`;
   if (!force) {
     const cached = await env.DB.get(key, 'json');
     if (cached && Date.now() < (cached.validUntil ?? cached.checkedAt + SHOP_CACHE_DAYS * DAY)) return cached;
   }
-  const verdict = await checkShop(domain, fetcher, settings);
-  // Vorübergehende Fehler nur 6 h merken, echte Urteile 30 Tage.
-  const ttl = verdict.retryable ? 6 * 3600 : SHOP_CACHE_DAYS * 86400;
+  const verdict = await checkShop(domain, fetcher, settings, env);
+  // Vorübergehende Fehler 6 h merken, Urteile ohne Trustpilot-Daten 7 Tage, sonst 30 Tage.
+  const ttl = verdict.retryable ? 6 * 3600 : verdict.strict ? 7 * 86400 : SHOP_CACHE_DAYS * 86400;
   verdict.validUntil = Date.now() + ttl * 1000;
   await env.DB.put(key, JSON.stringify(verdict), { expirationTtl: ttl });
   return verdict;

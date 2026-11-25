@@ -18,7 +18,7 @@ Ein Shop wird nur vorgeschlagen, wenn er **alle** Prüfungen besteht. Ausgeschlo
 | Prüfung | Regel (Standard, in der App änderbar) |
 |---|---|
 | Sperrliste | AliExpress, Temu, Shein, Wish, Banggood, DHgate … sofort raus |
-| Trustpilot | TrustScore ≥ 3,5 **und** ≥ 30 Bewertungen; kein Profil → raus |
+| Trustpilot | TrustScore ≥ 3,5 **und** ≥ 30 Bewertungen; kein Profil → raus. Blockiert Trustpilot den Abruf, wird die Bewertung über Google (SerpApi) gelesen; geht auch das nicht, wird strenger geprüft (Impressum mit Handelsregister/USt-ID) und markiert |
 | Impressum | muss existieren und Firma + Adresse + Kontakt enthalten |
 | Herkunft | Firmensitz/Telefon in Fernost (CN, HK, MO, TW, VN, TH, MY, ID, PH, KH, MM, LA) → raus; ebenso Domains wie `.cn` |
 | Rückgabe | Widerrufsbelehrung nötig, Frist ≥ 14 Tage, keine Wiedereinlagerungsgebühr, keine Rücksendung nach Fernost |
@@ -60,7 +60,7 @@ nach `main` mergen. KV-Speicher und Web-Push-Schlüssel legt das System selbst a
 
 ## Entwicklung
 ```bash
-cd worker && npm test     # 35 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
+cd worker && npm test     # 39 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
 npx wrangler dev          # API lokal
 ```
 

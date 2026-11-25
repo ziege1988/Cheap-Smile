@@ -19,6 +19,8 @@ function shopSummary(v) {
     withdrawalDays: v.returns?.days ?? null,
     notes: v.notes || [],
     verified: (v.notes || []).some((n) => /bestätigt/.test(n)),
+    trustUnknown: !!v.strict,
+    trustSource: v.trustpilot?.source || null,
   };
 }
 
@@ -120,7 +122,7 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
     if (force || !product.lastSearchAt || t - product.lastSearchAt > SEARCH_INTERVAL_HOURS * HOUR) {
       const knownDomains = [
         ...product.offers.map((o) => o.domain),
-        ...product.excluded.filter((e) => t - e.at < 7 * DAY).map((e) => e.domain),
+        ...product.excluded.filter((e) => t - e.at < 7 * DAY && !e.reasons.some((r) => /nicht erreichbar/.test(r))).map((e) => e.domain),
       ];
       const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: !product.lastSearchAt || force });
       product.searchError = error || null;

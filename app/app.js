@@ -65,7 +65,9 @@ function shippingText(o) {
 const condLabel = (c) => ({ used: 'Gebraucht', refurbished: 'Refurbished', new: 'Neu' }[c] || c);
 const trustText = (s) => {
   if (s?.allowlisted) return s.verified ? '✓ geprüfter bekannter Händler' : '✓ bekannter Händler';
-  return s?.trustScore != null ? `★ ${s.trustScore.toFixed(1)} (${s.trustCount?.toLocaleString('de-DE')})` : '';
+  if (s?.trustScore != null) return `★ ${s.trustScore.toFixed(1)}${s.trustCount != null ? ` (${s.trustCount.toLocaleString('de-DE')})` : ''}`;
+  if (s?.trustUnknown) return '⚠️ Trustpilot nicht prüfbar';
+  return '';
 };
 
 function relTime(ts) {
@@ -343,6 +345,7 @@ async function openSettings() {
     f.goodDealDropPct.value = s.goodDealDropPct;
     f.fallbackShipping.value = s.fallbackShipping;
     f.requireTrustpilot.checked = !!s.requireTrustpilot;
+    f.allowWithoutTrustpilotData.checked = !!s.allowWithoutTrustpilotData;
     f.allowlist.value = s.allowlist.join('\n');
     f.blocklist.value = s.blocklist.join('\n');
     f.blockedRegions.value = s.blockedRegions.join(', ');
@@ -366,6 +369,7 @@ $('#form-settings').addEventListener('submit', async (e) => {
         goodDealDropPct: f.goodDealDropPct.value,
         fallbackShipping: f.fallbackShipping.value.replace(',', '.'),
         requireTrustpilot: f.requireTrustpilot.checked,
+        allowWithoutTrustpilotData: f.allowWithoutTrustpilotData.checked,
         allowlist: lines(f.allowlist.value),
         blocklist: lines(f.blocklist.value),
         blockedRegions: lines(f.blockedRegions.value.toUpperCase()).map((x) => x.toUpperCase()),

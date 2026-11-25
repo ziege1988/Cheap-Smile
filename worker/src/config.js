@@ -6,6 +6,7 @@ export const DEFAULT_SETTINGS = {
   minTrustScore: 3.5,          // TrustScore 1–5; darunter wird der Shop ausgeschlossen
   minReviewCount: 30,          // weniger Bewertungen = nicht glaubwürdig genug
   requireTrustpilot: true,     // kein Trustpilot-Profil -> ausschließen (außer Positivliste)
+  allowWithoutTrustpilotData: true, // Trustpilot blockiert/nicht abrufbar -> strengere Prüfung statt Ausschluss
 
   // Domain-Alter (über RDAP, falls die Registry es unterstützt)
   minDomainAgeDays: 365,

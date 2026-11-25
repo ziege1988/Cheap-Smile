@@ -104,3 +104,37 @@ export async function searchCandidates(fetcher, env, query, settings, { exclude 
   }
   return { candidates: out, error: result.error, source: result.source };
 }
+
+/** Trustpilot-Daten aus Google-Ergebnissen lesen (Sterne + Anzahl). */
+export function parseTrustpilotFromSerp(j, domain) {
+  const hit = (j.organic_results || []).find((r) => {
+    try { const u = new URL(r.link); return /(^|\.)trustpilot\.com$/.test(u.hostname) && u.pathname.toLowerCase().includes(`/review/${domain}`); } catch { return false; }
+  });
+  if (!hit) return { found: false };
+  const ext = hit.rich_snippet?.top?.detected_extensions || hit.rich_snippet?.bottom?.detected_extensions || {};
+  const text = `${hit.title || ''} ${hit.snippet || ''} ${(hit.rich_snippet?.top?.extensions || []).join(' ')}`;
+  let score = Number(ext.rating ?? hit.rating);
+  if (!Number.isFinite(score)) {
+    const m = text.match(/TrustScore\s*(?:von|of|:)?\s*(\d[.,]\d)/i) || text.match(/(\d[.,]\d)\s*(?:\/|von|out of)\s*5/i) || text.match(/(?:Bewertung|Rating)\s*:?\s*(\d[.,]\d)/i);
+    score = m ? parseFloat(m[1].replace(',', '.')) : NaN;
+  }
+  let count = Number(ext.reviews ?? hit.reviews);
+  if (!Number.isFinite(count)) {
+    const m = text.match(/(\d[\d.,]*)\s*(?:Bewertungen|Rezensionen|reviews|Kunden|customers|Erfahrungsberichte)/i);
+    count = m ? parseInt(m[1].replace(/[.,]/g, ''), 10) : NaN;
+  }
+  if (!Number.isFinite(score) || score < 1 || score > 5) return { found: true, score: null };
+  return { found: true, score, count: Number.isFinite(count) ? count : null, name: null, source: 'google' };
+}
+
+export async function trustpilotViaGoogle(fetcher, env, domain) {
+  const limit = Number(env.SERPAPI_MONTHLY_LIMIT || 240);
+  const key = monthKey();
+  const used = Number((await env.DB.get(key)) || 0);
+  if (!googleAllowed(used, limit, new Date(), true)) return null;
+  const u = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(`trustpilot ${domain}`)}&google_domain=google.de&gl=de&hl=de&num=10&api_key=${encodeURIComponent(env.SERPAPI_KEY)}`;
+  const r = await fetchText(fetcher, u, { init: { headers: { Accept: 'application/json' }, timeout: 20000 } });
+  await env.DB.put(key, String(used + 1), { expirationTtl: 40 * 86400 });
+  if (!r.ok) return null;
+  try { return parseTrustpilotFromSerp(JSON.parse(r.text), domain); } catch { return null; }
+}

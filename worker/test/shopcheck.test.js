@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { checkShop, analyseReturns, detectRegions, parseTrustpilot, lookalikeOf } from '../src/shopcheck.js';
 import { DEFAULT_SETTINGS } from '../src/config.js';
 import { createFetcher } from '../src/util.js';
-import { fakeWeb, trustpilotPage, homePage, impressumDE, impressumCN, widerrufOK } from './helpers.js';
+import { parseTrustpilotFromSerp } from '../src/search.js';
+import { MemoryKV, fakeWeb, trustpilotPage, homePage, impressumDE, impressumCN, widerrufOK } from './helpers.js';
 
 const S = DEFAULT_SETTINGS;
 const goodShop = (d, extra = {}) => ({
@@ -39,11 +40,49 @@ test('Zu wenige Bewertungen / kein Profil -> ausgeschlossen', async () => {
   assert.ok(!v2.retryable);
 });
 
-test('Trustpilot blockiert -> vorläufig ausgeschlossen, kurzer Cache', async () => {
-  const w = goodShop('x.de', { 'https://de.trustpilot.com/review/x.de': { status: 403 } });
-  const v = await checkShop('x.de', createFetcher(fakeWeb(w)), S);
+test('Trustpilot blockiert, Abschalter aus -> vorläufig ausgeschlossen, kurzer Cache', async () => {
+  const w = goodShop('x.de', { 'https://de.trustpilot.com/review/x.de': { status: 403 }, 'https://www.trustpilot.com/review/x.de': { status: 403 } });
+  const v = await checkShop('x.de', createFetcher(fakeWeb(w)), { ...S, allowWithoutTrustpilotData: false });
   assert.equal(v.ok, false);
   assert.equal(v.retryable, true);
+});
+
+test('Trustpilot blockiert -> strengere Prüfung, seriöser Shop besteht', async () => {
+  const w = goodShop('x.de', { 'https://de.trustpilot.com/review/x.de': { status: 403 }, 'https://www.trustpilot.com/review/x.de': { status: 403 } });
+  const v = await checkShop('x.de', createFetcher(fakeWeb(w)), S);
+  assert.equal(v.ok, true, v.reasons.join());
+  assert.equal(v.strict, true);
+});
+
+test('Trustpilot blockiert + Impressum ohne Handelsregister/USt-ID -> raus', async () => {
+  const ohneRegister = '<html><body>Impressum: Max Muster e.K., Hauptstraße 1, 10115 Berlin, Deutschland. Telefon: 030 1234, info@x.de</body></html>';
+  const w = goodShop('x.de', { 'https://de.trustpilot.com/review/x.de': { status: 403 }, 'https://www.trustpilot.com/review/x.de': { status: 403 }, 'https://x.de/impressum': ohneRegister });
+  const v = await checkShop('x.de', createFetcher(fakeWeb(w)), S);
+  assert.equal(v.ok, false);
+  assert.match(v.reasons.join(), /Handelsregister/);
+});
+
+test('Trustpilot blockiert -> Bewertung über Google (SerpApi)', async () => {
+  const serp = (score, count) => ({ body: JSON.stringify({ organic_results: [
+    { link: 'https://www.example.com/x', title: 'x' },
+    { link: 'https://de.trustpilot.com/review/x.de', title: 'X Bewertungen', snippet: `TrustScore ${score} | ${count} Bewertungen` },
+  ] }) });
+  const base = { 'https://de.trustpilot.com/review/x.de': { status: 403 }, 'https://www.trustpilot.com/review/x.de': { status: 403 } };
+  const env = { DB: new MemoryKV(), SERPAPI_KEY: 'k' };
+  const gut = await checkShop('x.de', createFetcher(fakeWeb(goodShop('x.de', { ...base, 'https://serpapi.com/': serp('4,4', '1.234') }))), S, env);
+  assert.equal(gut.ok, true, gut.reasons.join());
+  assert.equal(gut.trustpilot.score, 4.4);
+  assert.equal(gut.trustpilot.count, 1234);
+  assert.ok(!gut.strict);
+  const mies = await checkShop('x.de', createFetcher(fakeWeb(goodShop('x.de', { ...base, 'https://serpapi.com/': serp('2,1', '900') }))), S, { DB: new MemoryKV(), SERPAPI_KEY: 'k' });
+  assert.equal(mies.ok, false);
+  assert.match(mies.reasons.join(), /Trustpilot 2.1/);
+});
+
+test('Trustpilot-Daten aus Google-Rich-Snippet', () => {
+  const r = parseTrustpilotFromSerp({ organic_results: [{ link: 'https://www.trustpilot.com/review/muster.de', rich_snippet: { top: { detected_extensions: { rating: 4.2, reviews: 5321 } } } }] }, 'muster.de');
+  assert.deepEqual([r.score, r.count], [4.2, 5321]);
+  assert.equal(parseTrustpilotFromSerp({ organic_results: [] }, 'muster.de').found, false);
 });
 
 test('Impressum in China -> ausgeschlossen', async () => {
