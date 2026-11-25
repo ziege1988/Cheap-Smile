@@ -1,0 +1,55 @@
+name: API veröffentlichen (Cloudflare Worker)
+
+on:
+  push:
+    branches: [main]
+    paths: ['worker/**', '.github/workflows/worker.yml']
+  pull_request:
+    paths: ['worker/**']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: worker } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: npm test
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: worker } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - name: KV-ID und erlaubte Herkunft einsetzen
+        env:
+          KV_ID: ${{ vars.KV_NAMESPACE_ID }}
+          ORIGIN: ${{ vars.ALLOWED_ORIGIN }}
+        run: |
+          test -n "$KV_ID" || { echo "::error::Repository-Variable KV_NAMESPACE_ID fehlt (siehe README)"; exit 1; }
+          sed -i "s/HIER_KV_ID_EINTRAGEN/${KV_ID}/" wrangler.toml
+          if [ -n "$ORIGIN" ]; then sed -i "s#ALLOWED_ORIGIN = \"\\*\"#ALLOWED_ORIGIN = \"${ORIGIN}\"#" wrangler.toml; fi
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          wranglerVersion: 4.168.0
+          secrets: |
+            APP_TOKEN
+            VAPID_PUBLIC_KEY
+            VAPID_PRIVATE_KEY
+            VAPID_SUBJECT
+        env:
+          APP_TOKEN: ${{ secrets.APP_TOKEN }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}

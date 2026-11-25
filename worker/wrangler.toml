@@ -1,0 +1,27 @@
+name = "cheap-smile-api"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Preisprüfung alle 30 Minuten (Free-Plan: max. 5 Cron-Trigger pro Konto)
+[triggers]
+crons = ["*/30 * * * *"]
+
+# KV-Speicher für Produkte, Preisverlauf, Shop-Urteile, Push-Abos.
+# Einmalig anlegen:  npx wrangler kv namespace create DB
+# und die ausgegebene id hier eintragen.
+[[kv_namespaces]]
+binding = "DB"
+id = "HIER_KV_ID_EINTRAGEN"
+
+[vars]
+# Herkunft der App (GitHub-Pages-URL) für CORS, z. B. "https://ziege1988.github.io"
+ALLOWED_ORIGIN = "*"
+SUBREQUEST_BUDGET = "40"
+
+# Geheimnisse (nicht hier eintragen, sondern per `wrangler secret put` bzw. GitHub-Secrets):
+#   APP_TOKEN          Zugangsschlüssel der App
+#   VAPID_PUBLIC_KEY   Web-Push öffentlicher Schlüssel   (npm run vapid)
+#   VAPID_PRIVATE_KEY  Web-Push privater Schlüssel
+#   VAPID_SUBJECT      z. B. https://ziege1988.github.io/Cheap-Smile/
+#   BRAVE_API_KEY      optional, bessere Websuche
