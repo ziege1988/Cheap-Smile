@@ -74,18 +74,20 @@ Das ist dein persönlicher Schlüssel. Nur wer ihn kennt, kann deine Produktlist
 2. Unter **„Build and deployment“ → „Source“** auswählen: **„GitHub Actions“**
 3. Fertig, es gibt keinen Speichern-Knopf.
 
-## Schritt 7 – Code freigeben (Pull Request zusammenführen)
+## Schritt 7 – Standard-Zweig festlegen und veröffentlichen
 
-1. Oben auf den Reiter **„Pull requests“**
-2. Den Pull Request **„Cheap Smile …“** öffnen (falls noch keiner da ist: gelber Hinweis „claude/pensive-goldberg-kgxzmf had recent pushes“ → **„Compare & pull request“** → **„Create pull request“**)
-3. Ganz unten **„Merge pull request“** → **„Confirm merge“**
-4. Oben auf den Reiter **„Actions“**. Dort laufen jetzt zwei Vorgänge (gelber Kreis = läuft, ca. 1–3 Minuten):
-   - **„API veröffentlichen (Cloudflare Worker)“**
-   - **„App veröffentlichen (GitHub Pages)“**
-5. Beide müssen einen **grünen Haken ✅** bekommen.
-6. Klicke auf **„API veröffentlichen …“**. In der Zusammenfassung steht
+1. Im Repository **Settings** → **General** → Abschnitt **„Default branch“**
+2. Auf das Pfeil-Symbol ⇄ tippen → **`main`** auswählen → **„Update“** → **„I understand, update the default branch“**
+   *(Ohne diesen Schritt verweigert GitHub Pages die Veröffentlichung.)*
+3. Oben auf den Reiter **„Actions“**
+4. Links **„API veröffentlichen (Cloudflare Worker)“** → rechts **„Run workflow“** → Branch `main` → grüner Button **„Run workflow“**
+5. Links **„App veröffentlichen (GitHub Pages)“** → ebenso **„Run workflow“**
+6. Warten, bis beide einen **grünen Haken ✅** haben (gelber Kreis = läuft, ca. 1–3 Minuten).
+7. Auf den Lauf **„API veröffentlichen …“** tippen. In der Zusammenfassung steht
    **„API-Adresse für die App: `https://cheap-smile-api.xxxx.workers.dev`“** → in die Notiz kopieren.
-7. Die **App-Adresse** lautet: **https://ziege1988.github.io/Cheap-Smile/**
+8. Die **App-Adresse** lautet: **https://ziege1988.github.io/Cheap-Smile/**
+
+> Spätere Änderungen werden automatisch veröffentlicht, sobald sie auf `main` landen. Die App auf dem iPhone aktualisiert sich dann beim nächsten Öffnen.
 
 ## Schritt 8 – Auf dem iPhone installieren
 
