@@ -56,7 +56,7 @@ function pickLink(links, re, domain) {
 const COMPANY_RE = /\b(gmbh|ag|ug|e\.\s?k\.|kg|ohg|gbr|e\.\s?v\.|ltd\.?|limited|b\.v\.|s\.r\.l\.|sarl|sas|s\.a\.|a\/s|ab|oy|inc\.?|llc|co\.\s?,?\s?ltd|einzelunternehm\w*|inhaber\w*|geschäftsführer\w*|geschaeftsfuehrer\w*|vertreten durch)(?=\W|$)/i;
 const ADDRESS_RE = /\b(?:\d{4,5}\s+[A-ZÄÖÜ][a-zäöüß]+|D-\d{5}|A-\d{4}|CH-\d{4})|(?:straße|strasse|str\.|weg|platz|allee|gasse|ring)\s*\d+/i;
 const CONTACT_RE = /[\w.+-]+@[\w-]+\.[\w.]+|(?:tel|telefon|phone|fon)\.?\s*:?\s*[+\d(]/i;
-const REGISTER_RE = /(handelsregister|registergericht|hrb|hra|ust-?id|umsatzsteuer|vat|kvk|company number|firmenbuch)/i;
+const REGISTER_RE = /(handelsregister|registergericht|hrb|hra|ust-?id|umsatzsteuer|steuernummer|vat|mwst|moms|cvr|kvk|kbo|siret|siren|rcs|nip|regon|org\.?\s?nr|organisationsnummer|y-tunnus|company number|companies house|firmenbuch|uid-nr|che-\d)/i;
 
 export function analyseImpressum(text, blocked) {
   const regions = detectRegions(text, blocked);

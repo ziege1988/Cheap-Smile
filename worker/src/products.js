@@ -24,9 +24,12 @@ function shopSummary(v) {
   };
 }
 
-function excludeDomain(product, domain, reasons, url) {
+/** Vorübergehender Ausschluss (z. B. Seite/Trustpilot nicht erreichbar)? */
+export const isTemporary = (e) => !!e.retryable || (e.reasons || []).some((r) => /nicht erreichbar/.test(r));
+
+function excludeDomain(product, domain, reasons, url, retryable = false) {
   product.excluded = (product.excluded || []).filter((e) => e.domain !== domain);
-  product.excluded.push({ domain, url, reasons: [].concat(reasons), at: Date.now() });
+  product.excluded.push({ domain, url, reasons: [].concat(reasons), at: Date.now(), retryable: !!retryable });
   product.offers = (product.offers || []).filter((o) => o.domain !== domain);
 }
 
@@ -53,13 +56,16 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
     if (!gtinMatch && score < MIN_MATCH) return; // anderes Produkt / Zubehör
     if (product.gtin && ex.gtin && product.gtin !== ex.gtin) return;
   }
-  const verdict = await getShopVerdict(env, domain, fetcher, settings);
-  if (!verdict.ok) { excludeDomain(product, domain, verdict.reasons, url); return; }
-
+  // Produktname und Bild sofort übernehmen – auch wenn der Shop danach ausgeschlossen wird,
+  // damit die Suche nach weiteren Shops mit dem echten Produktnamen läuft.
   if (manual && product.nameFromUrl && ex.title) {
     product.name = ex.title.replace(/\s+[|–-]\s+[^|–]*$/, '').slice(0, 120) || ex.title;
     product.nameFromUrl = false;
   }
+  if (manual && !product.image && ex.image) product.image = ex.image;
+
+  const verdict = await getShopVerdict(env, domain, fetcher, settings);
+  if (!verdict.ok) { excludeDomain(product, domain, verdict.reasons, url, verdict.retryable); return; }
   if (!product.gtin && ex.gtin && (manual || matchScore(product.name, ex.title) >= 0.85)) product.gtin = ex.gtin;
   if (!product.image && ex.image) product.image = ex.image;
 
@@ -107,7 +113,12 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
   product.partial = false;
   try {
     // Eigener Link (beim Anlegen angegeben)
-    if (product.sourceUrl && !product.offers.some((o) => o.manual) && !product.excluded.some((e) => e.domain === domainOf(product.sourceUrl))) {
+    // „Jetzt neu prüfen“ bzw. vorübergehende Fehler: ausgeschlossene Shops erneut bewerten
+    if (force) product.excluded = product.excluded.filter((e) => !isTemporary(e));
+    const srcDomain = product.sourceUrl && domainOf(product.sourceUrl);
+    const srcExcluded = product.excluded.find((e) => e.domain === srcDomain);
+    const srcDue = !srcExcluded || force || isTemporary(srcExcluded) || t - srcExcluded.at > DAY;
+    if (product.sourceUrl && !product.offers.some((o) => o.manual) && srcDue) {
       await considerCandidate(env, product, fetcher, settings, product.sourceUrl, { manual: true });
     }
 
@@ -119,10 +130,12 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
     product.offers = product.offers.filter((o) => !o.stale || t - o.checkedAt < 7 * DAY);
 
     // Neue Shops suchen
-    if (force || !product.lastSearchAt || t - product.lastSearchAt > SEARCH_INTERVAL_HOURS * HOUR) {
+    if (product.nameFromUrl) {
+      product.searchError = 'Produktname noch unbekannt – Shop-Link konnte nicht gelesen werden';
+    } else if (force || !product.lastSearchAt || t - product.lastSearchAt > SEARCH_INTERVAL_HOURS * HOUR) {
       const knownDomains = [
         ...product.offers.map((o) => o.domain),
-        ...product.excluded.filter((e) => t - e.at < 7 * DAY && !e.reasons.some((r) => /nicht erreichbar/.test(r))).map((e) => e.domain),
+        ...product.excluded.filter((e) => t - e.at < 7 * DAY && !isTemporary(e)).map((e) => e.domain),
       ];
       const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: !product.lastSearchAt || force });
       product.searchError = error || null;

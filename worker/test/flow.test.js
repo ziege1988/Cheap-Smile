@@ -124,3 +124,36 @@ test('Push-Schlüssel werden automatisch erzeugt, wenn keine Secrets gesetzt sin
   const again = await (await worker.fetch(new Request('https://api.test/api/vapid'), env, { waitUntil() {} })).json();
   assert.equal(again.publicKey, publicKey, 'stabil gespeichert');
 });
+
+test('Shop-Link: Name sofort übernommen, nach Sperre wird bei „Jetzt neu prüfen“ neu bewertet', async () => {
+  let blocked = true;
+  const tpRoute = () => (blocked ? { status: 403 } : trustpilotPage(4.5, 2000, 'Dilling'));
+  const web = fakeWeb({
+    ...shop('dilling.de', productPage({ name: 'Merino Unterhemd Damen', price: 34.95, shipping: 0 })),
+    'https://de.trustpilot.com/review/dilling.de': tpRoute,
+    'https://www.trustpilot.com/review/dilling.de': tpRoute,
+    'https://html.duckduckgo.com/': '<html></html>',
+  });
+  globalThis.fetch = web;
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'geheim' };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const call = async (method, path, body) => {
+    const res = await worker.fetch(new Request(`https://api.test${path}`, { method, headers: { Authorization: 'Bearer geheim', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), env, ctx);
+    return res.json();
+  };
+  await call('PUT', '/api/settings', { allowWithoutTrustpilotData: false });
+  const p = await call('POST', '/api/products', { query: 'https://dilling.de/p/1', wishPrice: 30 });
+  await Promise.all(waits);
+  let d = await call('GET', `/api/products/${p.id}`);
+  assert.equal(d.name, 'Merino Unterhemd Damen', 'Name trotz Ausschluss übernommen');
+  assert.equal(d.offers.length, 0);
+  assert.match(d.excluded[0].reasons[0], /nicht erreichbar/);
+
+  blocked = false;
+  await env.DB.delete('shop2:dilling.de'); // 6-h-Cache simuliert abgelaufen
+  d = (await call('POST', `/api/products/${p.id}/refresh`)).product;
+  assert.equal(d.offers.length, 1, 'Shop nach erneuter Prüfung zugelassen');
+  assert.equal(d.excluded.length, 0);
+  assert.equal(d.best.effectiveTotal, 34.95);
+});
