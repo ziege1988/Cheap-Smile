@@ -332,6 +332,7 @@ async function openSettings() {
   $('#version').textContent = `Version ${APP_VERSION === '__VERSION__' ? 'dev' : APP_VERSION.slice(0, 7)}`;
   updatePushState();
   open('settings');
+  if (!cfg.token) setTimeout(() => f.token.focus(), 300);
   if (!cfg.apiBase || !cfg.token) return;
   try {
     const s = await api('/api/settings');
@@ -452,7 +453,7 @@ async function updateBanner() {
   const b = $('#banner');
   let html = '';
   if (!cfg.apiBase || !cfg.token) {
-    html = '<span>Willkommen! Verbinde die App einmalig mit deinem Server.</span><button class="btn primary small" id="bn-act">Einrichten</button>';
+    html = '<span>Willkommen! Gib einmalig dein Passwort ein.</span><button class="btn primary small" id="bn-act">Einrichten</button>';
   } else if (!isStandalone() && /iPhone|iPad/.test(navigator.userAgent)) {
     html = '<span>Tipp: Über Teilen → „Zum Home-Bildschirm“ wird Cheap Smile zur App – nur dann gibt es Push.</span>';
   } else if (pushSupported() && Notification.permission !== 'granted') {
