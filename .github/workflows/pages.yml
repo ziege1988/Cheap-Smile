@@ -28,7 +28,7 @@ jobs:
           API_BASE: ${{ vars.API_BASE }}
         run: |
           # Neue Version bei jedem Deployment -> iPhone-App aktualisiert sich beim nächsten Start
-          sed -i "s/__VERSION__/${GITHUB_SHA}/g" app/sw.js app/app.js
+          sed -i "s/__VERSION__/${GITHUB_SHA}/g" app/sw.js app/app.js app/index.html app/manifest.webmanifest
           if [ -n "$API_BASE" ]; then sed -i "s#'__API_BASE__'#'${API_BASE}'#g" app/config.js; fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
