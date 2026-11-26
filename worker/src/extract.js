@@ -533,7 +533,9 @@ export function extractOffer(html, url, settings = {}, want = {}, extra = {}) {
     mpns: allMpns,
     isListing: listing,
     ambiguousVariant,
-    brand: first(product?.brand)?.name || (typeof product?.brand === 'string' ? product.brand : null),
+    brand: first(product?.brand)?.name || (typeof product?.brand === 'string' ? product.brand : null)
+      || first(product?.manufacturer)?.name || (typeof product?.manufacturer === 'string' ? product.manufacturer : null),
+    siteName: meta(html, ['og:site_name', 'application-name']) || (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').split(/\s[|–-]\s/).pop()?.trim() || null,
     sellerName,
     coupons: extractCoupons(text),
     hasStructuredData: !!product,

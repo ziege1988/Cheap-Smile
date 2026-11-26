@@ -274,3 +274,45 @@ test('Warteschlange: Abbruch wegen Abruf-Budget setzt beim nächsten Lauf fort �
   assert.ok(d.offers.length > before);
   assert.equal(web.calls.filter((c) => c.url.includes('duckduckgo')).length, searchesBefore, 'keine erneute Suche');
 });
+
+test('Kein „ähnlicher“ Artikel: zu allgemeine Bezeichnung, andere Marke, Kinder-Version, Preis-Ausreißer, „Falscher Artikel“-Knopf', async () => {
+  const pg = (o) => `<html><head><title>${o.name} | ${o.site}</title><script type="application/ld+json">${JSON.stringify({ '@type': 'Product', name: o.name, ...(o.brand ? { brand: { '@type': 'Brand', name: o.brand } } : {}),
+    offers: { '@type': 'Offer', price: String(o.price), priceCurrency: 'EUR', shippingDetails: { '@type': 'OfferShippingDetails', shippingRate: { '@type': 'MonetaryAmount', value: 0 } } } })}</script></head></html>`;
+  const web = fakeWeb({
+    'https://html.duckduckgo.com/': ddg(['https://fremdmarke.de/p/1', 'https://kinder-shop.de/p/2', 'https://billig-gleich.de/p/3', 'https://echt-gleich.de/p/4', 'https://ohne-marke.de/p/5']),
+    // Hersteller: ohne Marke in den Produktdaten, aber „| Dilling“ im Titel
+    ...shop('dilling.de', pg({ name: 'Halswärmer aus Merinowolle', site: 'Dilling', price: 34.95 })),
+    ...shop('fremdmarke.de', pg({ name: 'Halswärmer aus Merinowolle', brand: 'Buff', site: 'Fremdmarke', price: 19.9 })),
+    ...shop('kinder-shop.de', pg({ name: 'Dilling Halswärmer aus Merinowolle für Kinder', brand: 'Dilling', site: 'Kindershop', price: 24.95 })),
+    ...shop('billig-gleich.de', pg({ name: 'Dilling Halswärmer aus Merinowolle', brand: 'Dilling', site: 'Billig', price: 9.99 })),
+    ...shop('echt-gleich.de', pg({ name: 'Dilling Halswärmer aus Merinowolle, grau', brand: 'Dilling', site: 'Echt', price: 32.5 })),
+    ...shop('ohne-marke.de', pg({ name: 'Halswärmer aus Merinowolle', site: 'Ohne', price: 30 })),
+  });
+  globalThis.fetch = web;
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'geheim' };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const call = async (method, path, body) => (await worker.fetch(new Request(`https://api.test${path}`, { method, headers: { Authorization: 'Bearer geheim', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), env, ctx)).json();
+  const p = await call('POST', '/api/products', { query: 'https://dilling.de/p/hw', includeAmazon: false });
+  await Promise.all(waits);
+  let d = await call('GET', `/api/products/${p.id}`);
+  assert.equal(d.brand, 'Dilling', 'Marke aus dem Seitentitel abgeleitet');
+  const valid = d.offers.filter((o) => !o.excludedReason).map((o) => o.domain).sort();
+  assert.deepEqual(valid, ['dilling.de', 'echt-gleich.de']);
+  const why = Object.fromEntries(d.skipped.map((x) => [x.domain, x.why]));
+  assert.match(why['fremdmarke.de'], /Andere Marke/);
+  assert.match(why['kinder-shop.de'], /kinder/i);
+  assert.match(why['ohne-marke.de'], /Marke nicht im Titel/);
+  assert.match(d.offers.find((o) => o.domain === 'billig-gleich.de').excludedReason, /Preis weicht stark/);
+
+  d = await call('PATCH', `/api/products/${p.id}`, { rejectOffer: 'https://echt-gleich.de/p/4?utm=x' });
+  assert.ok(!d.offers.some((o) => o.domain === 'echt-gleich.de'));
+  await call('POST', `/api/products/${p.id}/refresh`);
+  d = await call('GET', `/api/products/${p.id}`);
+  assert.ok(!d.offers.some((o) => o.domain === 'echt-gleich.de'), 'bleibt aussortiert');
+  assert.match(d.skipped.find((x) => x.domain === 'echt-gleich.de').why, /falscher Artikel/);
+
+  // Nur ein Wort, keine Marke, keine EAN -> kein Abgleich über die Bezeichnung
+  const { sameArticle } = await import('../src/products.js');
+  assert.match(sameArticle({ name: 'Halswärmer', sourceUrl: 'x', brand: 'Dilling' }, { title: 'Dilling Halswärmer', brand: 'Dilling' }).why, /zu allgemein/);
+});

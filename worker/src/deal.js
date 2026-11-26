@@ -53,6 +53,18 @@ export function applyOfferRules(product, settings) {
     const si = sellerIssue(o, settings);
     if (si) o.excludedReason = si;
   }
+  // Nur über die Bezeichnung zugeordnet und Preis weit weg vom Original -> vermutlich anderer Artikel
+  const refs = offers.filter((o) => o.manual || /^(EAN|Herstellernummer|ASIN)/.test(o.matchedBy || '')).map((o) => o.price).filter((x) => x > 0);
+  const ref = median(refs);
+  if (ref) {
+    for (const o of offers) {
+      if (o.excludedReason || !/Bezeichnung/.test(o.matchedBy || '') || !o.price) continue;
+      const r = o.price / ref;
+      if (r < settings.nameMatchMinRatio || r > settings.nameMatchMaxRatio) {
+        o.excludedReason = `Preis weicht stark vom Original ab (${Math.round(r * 100)} %) – vermutlich anderer Artikel`;
+      }
+    }
+  }
   for (const o of offers) {
     if (o.returnCost != null && o.price && o.returnCost / o.price > settings.maxReturnCostRatio) {
       o.excludedReason = `Rücksendekosten ${o.returnCost.toFixed(2)} € unverhältnismäßig (${Math.round((o.returnCost / o.price) * 100)} % vom Preis)`;

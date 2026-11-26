@@ -2,7 +2,7 @@
 // Shops verifizieren, Bestpreis + Historie fortschreiben, Alarme auswerten.
 
 import { MAX_CANDIDATES, SEARCH_INTERVAL_HOURS, PRICE_INTERVAL_HOURS } from './config.js';
-import { fetchText, domainOf, matchScore, nameFromUrl, BudgetExceeded, HOUR, DAY } from './util.js';
+import { fetchText, domainOf, matchScore, nameFromUrl, tokens, BudgetExceeded, HOUR, DAY } from './util.js';
 import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText, shopifyJsonUrl, parseShopifyJson } from './extract.js';
 import { getShopVerdict } from './shopcheck.js';
 import { searchCandidates } from './search.js';
@@ -32,6 +32,10 @@ function shopSummary(v) {
   };
 }
 
+/** Adresse ohne Parameter – zum Wiedererkennen vom Nutzer aussortierter Angebote. */
+export const offerKey = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/$/, '')).toLowerCase(); } catch { return String(u); } };
+export const isRejected = (product, url) => (product.rejected || []).includes(offerKey(url));
+
 /** Vorübergehender Ausschluss (z. B. Seite/Trustpilot nicht erreichbar)? */
 export const isTemporary = (e) => !!e.retryable || (e.reasons || []).some((r) => /nicht erreichbar/.test(r));
 
@@ -57,6 +61,28 @@ function coreName(name) {
  * 2. Herstellernummer (MPN) auf beiden Seiten: muss übereinstimmen.
  * 3. Sonst Merkmale: Marke, Produktbezeichnung (inkl. Modellnummer), Farbe und Größe.
  */
+// Wörter, die einen anderen Artikel kennzeichnen, wenn sie nur auf einer Seite vorkommen
+const DISTINCT_WORDS = [
+  ['kinder', 'kids', 'kind', 'baby', 'babys', 'junior', 'jungen', 'maedchen', 'madchen', 'toddler'],
+  ['damen', 'frauen', 'women', 'woman', 'ladies'],
+  ['herren', 'maenner', 'manner', 'men', 'mens'],
+  ['set', 'pack', 'paket', 'bundle', '2er', '3er', '4er', '5er', '6er', '10er', 'doppelpack', 'multipack'],
+  ['mini'], ['max'], ['pro'], ['plus'], ['lite'], ['ultra'], ['xl'], ['refill', 'nachfuellung', 'nachfullung', 'ersatz'],
+];
+const GENERIC_TOKENS = new Set(['aus', 'fur', 'mit', 'und', 'oder', 'von', 'zum', 'zur', 'the', 'neu', 'original', 'premium', 'top', 'qualitat', 'hochwertig']);
+
+/** Aussagekräftige Wörter der Bezeichnung (ohne Marke, Farbe, Größe, Füllwörter). */
+function keyTokens(name, brand) {
+  const b = new Set(tokens(brand || ''));
+  return tokens(coreName(name)).filter((t) => t.length >= 3 && !b.has(t) && !GENERIC_TOKENS.has(t));
+}
+
+/**
+ * Ist das Angebot exakt derselbe Artikel?
+ * 1. EAN/GTIN vorhanden auf beiden Seiten: muss übereinstimmen (inkl. Variante).
+ * 2. Herstellernummer (MPN) auf beiden Seiten: muss übereinstimmen.
+ * 3. Sonst Merkmale: Marke (Pflicht), aussagekräftige Bezeichnung, unterscheidende Wörter, Farbe, Größe.
+ */
 export function sameArticle(product, ex) {
   if (ex.isListing) return { ok: false, why: 'Listen-/Kategorieseite statt Produktseite' };
   const gs = new Set([product.gtin, ...(product.gtins || [])].map(normGtin).filter(Boolean));
@@ -66,12 +92,29 @@ export function sameArticle(product, ex) {
   if (m && exM) return m === exM ? { ok: true, by: 'Herstellernummer' } : { ok: false, why: 'Andere Herstellernummer' };
 
   // Merkmale
-  const b1 = String(product.brand || '').toLowerCase().trim(), b2 = String(ex.brand || '').toLowerCase().trim();
-  if (b1 && b2 && !b1.includes(b2) && !b2.includes(b1)) return { ok: false, why: `Andere Marke (${ex.brand})` };
-  if (b1 && !b2 && !String(ex.title).toLowerCase().includes(b1)) return { ok: false, why: 'Marke nicht im Titel' };
   const fromLink = !!product.sourceUrl;
-  const score = matchScore(coreName(product.name), coreName(ex.title));
-  if (score < (fromLink ? 0.8 : 1)) return { ok: false, why: `Bezeichnung weicht ab (${Math.round(score * 100)} % gleich)` };
+  const b1 = String(product.brand || '').toLowerCase().trim(), b2 = String(ex.brand || '').toLowerCase().trim();
+  // Ohne bekannte Marke nur, wenn die Bezeichnung eine Modellnummer enthält (z. B. „WH-1000XM5“)
+  const hasModel = keyTokens(product.name, product.brand).some((k) => /\d/.test(k) && /[a-z]/.test(k));
+  if (fromLink && !b1 && !hasModel) return { ok: false, why: 'Marke des Artikels unbekannt – Abgleich nur über EAN/Artikelnummer möglich' };
+  if (b1 && b2 && !b1.includes(b2) && !b2.includes(b1)) return { ok: false, why: `Andere Marke (${ex.brand})` };
+  if (b1 && !b2 && !tokens(ex.title).includes(tokens(b1)[0])) return { ok: false, why: 'Marke nicht im Titel' };
+
+  // Zubehör („Hülle für …“) oder abweichende Modellnummer
+  if (matchScore(coreName(product.name), ex.title) === 0) return { ok: false, why: 'Zubehör oder anderes Modell' };
+  const keys = keyTokens(product.name, product.brand);
+  if (keys.length < 2) return { ok: false, why: `Bezeichnung „${product.name}“ zu allgemein – nur Abgleich über EAN/Artikelnummer` };
+  const exTok = new Set(tokens(`${ex.title}`));
+  const hit = keys.filter((k) => exTok.has(k)).length;
+  const score = hit / keys.length;
+  const modelOk = keys.filter((k) => /\d/.test(k)).every((k) => exTok.has(k));
+  if (!modelOk || score < (fromLink && b1 ? 0.8 : 1)) return { ok: false, why: `Bezeichnung weicht ab (${Math.round(score * 100)} % gleich)` };
+  const refTok = new Set(tokens(product.name));
+  for (const group of DISTINCT_WORDS) {
+    const inRef = group.some((w) => refTok.has(w));
+    const inEx = group.some((w) => exTok.has(w));
+    if (inRef !== inEx) return { ok: false, why: `Anderer Artikel („${group.find((w) => (inEx ? exTok : refTok).has(w))}“ nur auf einer Seite)` };
+  }
 
   const notes = [];
   const refC = normColor(product.color) || (fromLink ? null : colorsInText(product.name)[0]);
@@ -146,12 +189,13 @@ async function loadOffer(fetcher, url, settings, want = {}, { deep = false } = {
 async function considerCandidate(env, product, fetcher, settings, url, { manual = false } = {}) {
   const domain = domainOf(url);
   if (!domain) return;
-  const { ex, error, html } = await loadOffer(fetcher, url, settings, identityOf(product), { deep: manual });
   const skip = (why) => {
     if (manual) return;
     product.skipped = (product.skipped || []).filter((x) => x.domain !== domain);
     product.skipped.push({ domain, url, why, at: Date.now() });
   };
+  if (!manual && isRejected(product, url)) { skip('Von dir als falscher Artikel markiert'); return; }
+  const { ex, error, html } = await loadOffer(fetcher, url, settings, identityOf(product), { deep: manual });
   if (error) {
     if (manual) {
       product.lastError = `Eigener Link: ${error}`;
@@ -171,7 +215,7 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
     // Eigener Link legt fest, welcher Artikel (inkl. Variante) gesucht ist
     if (!product.gtin && !product.gtins?.length && !product.mpn) {
       product.mpn = ex.mpn || null;
-      product.brand = ex.brand || null;
+      product.brand = ex.brand || guessBrand(ex, domain);
       if (product.userVariant) {
         // Farbe/Größe vom Nutzer vorgegeben: passende Variante festlegen
         applyVariantChoice(product, product.color, product.size);
@@ -216,6 +260,15 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
 }
 
 /** Auswahlmöglichkeiten (Farbe/Größe) vom eigenen Shop-Link merken. */
+/** Marke aus Seitentitel/Seitenname ableiten, wenn sie zur Domain passt (Herstellershop, z. B. „… | Dilling“ auf dilling.de). */
+export function guessBrand(ex, domain) {
+  const label = String(domain || '').split('.').slice(-2, -1)[0] || '';
+  const site = String(ex.siteName || '');
+  if (label.length >= 3 && site.toLowerCase().replace(/[^a-z0-9]/g, '').includes(label.replace(/[^a-z0-9]/g, ''))) return site.replace(/\s*(shop|online-?shop|store|gmbh|ag|official|offizieller.*)$/i, '').trim() || null;
+  if (label.length >= 3 && tokens(ex.title).includes(label)) return label.charAt(0).toUpperCase() + label.slice(1);
+  return null;
+}
+
 function rememberOptions(product, ex) {
   if (ex.variants?.length) product.variants = ex.variants;
   const ol = ex.optionLists || {};
@@ -224,7 +277,10 @@ function rememberOptions(product, ex) {
 
 async function refreshOffer(env, product, fetcher, settings, o) {
   const { ex, error } = await loadOffer(fetcher, o.url, settings, identityOf(product), { deep: !!o.manual });
-  if (o.manual && ex) rememberOptions(product, ex);
+  if (o.manual && ex) {
+    rememberOptions(product, ex);
+    if (!product.brand) product.brand = ex.brand || guessBrand(ex, o.domain);
+  }
   o.checkedAt = Date.now();
   if (error) {
     // Liste statt Produktseite / falsche Variante: Angebot sofort entfernen
@@ -274,6 +330,7 @@ async function checkAmazon(env, product, fetcher, settings, { priority }) {
   product.lastAmazonAt = Date.now();
   let hit = null, match = null, whyNot = null;
   for (const r of results) {
+    if (isRejected(product, r.url)) { whyNot ||= 'von dir als falscher Artikel markiert'; continue; }
     const m = product.asin
       ? (r.asin === product.asin ? { ok: true, by: 'ASIN (Amazon-Link)' } : { ok: false, why: 'Andere ASIN' })
       : sameArticle(product, r);

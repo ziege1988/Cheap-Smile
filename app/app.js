@@ -243,6 +243,7 @@ function offerHtml(o, p, isBest) {
     <div class="offer-actions">
       ${c ? `<button class="btn small ghost" data-action="copy" data-code="${esc(c.code)}">Code ${esc(c.code)} kopieren</button>` : ''}
       <a class="btn small ${isBest ? 'primary' : ''}" href="${esc(safeUrl(o.url))}" target="_blank" rel="noopener noreferrer">Zum Shop ↗</a>
+      ${o.manual ? '' : `<button class="btn small ghost" data-action="reject" data-url="${esc(o.url)}" data-shop="${esc(o.shopName || o.domain)}">Falscher Artikel</button>`}
     </div>
   </div>`;
 }
@@ -421,6 +422,12 @@ document.addEventListener('click', (e) => {
   switch (act.dataset.action) {
     case 'copy': e.stopPropagation(); copy(act.dataset.code); break;
     case 'delete': remove(id); break;
+    case 'reject': {
+      const pid = $('#sheet-detail').dataset.id;
+      if (!confirm(`Angebot von ${act.dataset.shop} als falschen Artikel aussortieren? Es wird für dieses Produkt nicht mehr angezeigt.`)) break;
+      update(pid, { rejectOffer: act.dataset.url }).then(() => toast('Aussortiert'));
+      break;
+    }
     case 'detail': $('#sheet-detail').dataset.id = id; showDetail(id); break;
   }
 });

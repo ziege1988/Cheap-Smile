@@ -29,6 +29,8 @@ export const DEFAULT_SETTINGS = {
   goodDealDropPct: 12,         // mind. 12 % unter dem 30-Tage-Median
   goodDealMinHistory: 4,       // so viele Messpunkte braucht es mindestens
   fakePriceRatio: 0.55,        // < 55 % des Medians anderer Shops = Fake-Shop-Indiz
+  nameMatchMinRatio: 0.6,      // nur über Bezeichnung zugeordnet: Preis muss 60–180 % des Originals sein
+  nameMatchMaxRatio: 1.8,
 
   // Positivliste: bekannte, seriöse Händler. Trustpilot-Schwelle entfällt hier,
   // weil große Händler auf Trustpilot oft schlechter bewertet sind als ihr Ruf.

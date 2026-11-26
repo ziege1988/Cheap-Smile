@@ -4,7 +4,7 @@
 
 import { createFetcher, uid, domainOf } from './util.js';
 import { getSettings, saveSettings, getProduct, saveProduct, deleteProduct, allProducts, getSubs, addSub, removeSub } from './store.js';
-import { checkProduct, toClient, applyVariantChoice } from './products.js';
+import { checkProduct, toClient, applyVariantChoice, offerKey } from './products.js';
 import { bestOffer, effectiveTotal } from './deal.js';
 import { sendPush, b64urlEncode } from './push.js';
 import { quotaStatus } from './search.js';
@@ -165,6 +165,15 @@ async function handleApi(req, env, ctx, url) {
         product.notify = { lastAlertAt: product.notify?.lastAlertAt }; // anderer Artikel -> Alarme neu
         product.history = [];
         variantChanged = true;
+      }
+      if (typeof body.rejectOffer === 'string' && body.rejectOffer) {
+        // Vom Nutzer als „falscher Artikel“ markiert: dauerhaft für dieses Produkt aussortieren
+        const key = offerKey(body.rejectOffer);
+        product.rejected = [...new Set([...(product.rejected || []), key])].slice(-100);
+        const o = (product.offers || []).find((x) => offerKey(x.url) === key);
+        product.offers = (product.offers || []).filter((x) => offerKey(x.url) !== key);
+        product.skipped = [...(product.skipped || []).filter((x) => offerKey(x.url) !== key),
+          { domain: o?.domain || domainOf(body.rejectOffer), url: body.rejectOffer, why: 'Von dir als falscher Artikel markiert', at: Date.now() }];
       }
       if (typeof body.name === 'string' && body.name.trim()) product.name = body.name.trim().slice(0, 120);
       const best = bestOffer(product);
