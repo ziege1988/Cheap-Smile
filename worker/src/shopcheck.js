@@ -185,7 +185,7 @@ export async function checkShop(domain, fetcher, settings, env = {}, extra = {})
   if (!tp.ok && tp.status !== 404) tp = await fetchText(fetcher, `https://www.trustpilot.com/review/${domain}`, { maxBytes: 800_000 });
   res.trustpilot = tp.ok ? parseTrustpilot(tp.text) : null;
   let tpUnknown = !tp.ok && tp.status !== 404; // blockiert/Fehler: nichts bekannt
-  if (tpUnknown && env.SERPAPI_KEY && env.DB) {
+  if (tpUnknown && !res.allowlisted && env.SERPAPI_KEY && env.DB) {
     const g = await trustpilotViaGoogle(fetcher, env, domain);
     if (g?.score != null) { res.trustpilot = g; tpUnknown = false; res.notes.push('Trustpilot-Bewertung über Google ermittelt'); }
   }

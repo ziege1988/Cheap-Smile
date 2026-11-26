@@ -87,3 +87,30 @@ export async function amazonSearch(fetcher, env, query, { priority = false } = {
 }
 
 export const totalOf = (o) => round2(o.price + (o.shipping || 0));
+
+/** Amazon-Artikelnummer (ASIN) aus einem Amazon-Link. */
+export function asinOf(href) {
+  try {
+    const u = new URL(href);
+    if (!/(^|\.)amazon\.(de|com|co\.uk|fr|it|es|nl|at)$/i.test(u.hostname) && !/^amzn\.(eu|to)$/i.test(u.hostname)) return null;
+    return u.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d|product)\/([A-Z0-9]{10})(?:[/?]|$)/i)?.[1]?.toUpperCase() || null;
+  } catch { return null; }
+}
+export const isAmazonUrl = (href) => { try { return /(^|\.)amazon\.[a-z.]+$|^amzn\./i.test(new URL(href).hostname); } catch { return false; } };
+
+/** Amazon-Kurzlinks (amzn.eu/d/…, amzn.to/…) aus der Amazon-App auflösen – ohne die blockierte Zielseite zu laden. */
+export async function resolveAmazonShortLink(href, fetchImpl = fetch) {
+  try {
+    const u = new URL(href);
+    if (!/^(amzn\.(eu|to)|a\.co)$/i.test(u.hostname)) return href;
+    let cur = href;
+    for (let i = 0; i < 4; i++) {
+      const res = await fetchImpl(cur, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const loc = res.headers.get('location');
+      if (!loc) break;
+      cur = new URL(loc, cur).toString();
+      if (asinOf(cur)) return cur;
+    }
+    return cur;
+  } catch { return href; }
+}

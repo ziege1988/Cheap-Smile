@@ -2,11 +2,11 @@
 // Shops verifizieren, Bestpreis + Historie fortschreiben, Alarme auswerten.
 
 import { MAX_CANDIDATES, SEARCH_INTERVAL_HOURS, PRICE_INTERVAL_HOURS } from './config.js';
-import { fetchText, domainOf, matchScore, BudgetExceeded, HOUR, DAY } from './util.js';
+import { fetchText, domainOf, matchScore, nameFromUrl, BudgetExceeded, HOUR, DAY } from './util.js';
 import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText } from './extract.js';
 import { getShopVerdict } from './shopcheck.js';
 import { searchCandidates } from './search.js';
-import { amazonSearch, AMAZON_DOMAIN } from './amazon.js';
+import { amazonSearch, AMAZON_DOMAIN, asinOf } from './amazon.js';
 import { applyOfferRules, recordHistory, evaluateAlerts, bestOffer, effectiveTotal } from './deal.js';
 
 
@@ -146,7 +146,15 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
     product.skipped.push({ domain, url, why, at: Date.now() });
   };
   if (error) {
-    if (manual) product.lastError = `Eigener Link: ${error}`;
+    if (manual) {
+      product.lastError = `Eigener Link: ${error}`;
+      const slug = nameFromUrl(url);
+      if (product.nameFromUrl && slug) {
+        product.name = slug;
+        product.nameFromUrl = false;
+        product.nameFromSlug = true; // vorläufig – wird ersetzt, sobald die Seite lesbar ist
+      }
+    }
     skip(error);
     return;
   }
@@ -175,9 +183,10 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
   if (!match.ok) { skip(match.why); return; } // nicht exakt derselbe Artikel
   // Produktname und Bild sofort übernehmen – auch wenn der Shop danach ausgeschlossen wird,
   // damit die Suche nach weiteren Shops mit dem echten Produktnamen läuft.
-  if (manual && product.nameFromUrl && ex.title) {
+  if (manual && (product.nameFromUrl || product.nameFromSlug) && ex.title) {
     product.name = ex.title.replace(/\s+[|–-]\s+[^|–]*$/, '').slice(0, 120) || ex.title;
     product.nameFromUrl = false;
+    product.nameFromSlug = false;
   }
   if (manual && !product.image && ex.image) product.image = ex.image;
 
@@ -229,20 +238,24 @@ const AMAZON_INTERVAL_HOURS = 24;
 /** Amazon-Angebot über SerpApi suchen, mit denselben strengen Regeln abgleichen und eintragen. */
 async function checkAmazon(env, product, fetcher, settings, { priority }) {
   const existing = product.offers.find((o) => o.source === 'amazon');
-  const query = product.gtin || product.name;
+  const query = product.asin || product.gtin || product.name;
   let { results, error, quota } = await amazonSearch(fetcher, env, query, { priority });
-  // EAN liefert bei Amazon nicht immer Treffer -> einmal mit dem Namen nachfassen
-  if (!results.length && !quota && product.gtin && priority) ({ results, error, quota } = await amazonSearch(fetcher, env, product.name, { priority }));
+  // EAN/ASIN liefert nicht immer Treffer -> einmal mit dem Namen nachfassen
+  if (!results.length && !quota && query !== product.name && priority && !product.nameFromUrl) {
+    ({ results, error, quota } = await amazonSearch(fetcher, env, product.name, { priority }));
+  }
   product.amazonError = error || null;
   if (quota) {
     if (existing) existing.quotaStale = true; // letzter Preis bleibt, wird als veraltet markiert
     return;
   }
   product.lastAmazonAt = Date.now();
-  let hit = null, note = null, whyNot = null;
+  let hit = null, match = null, whyNot = null;
   for (const r of results) {
-    const m = sameArticle(product, r);
-    if (m.ok) { hit = r; note = m.note; break; }
+    const m = product.asin
+      ? (r.asin === product.asin ? { ok: true, by: 'ASIN (Amazon-Link)' } : { ok: false, why: 'Andere ASIN' })
+      : sameArticle(product, r);
+    if (m.ok) { hit = r; match = m; break; }
     whyNot ||= m.why;
   }
   product.offers = product.offers.filter((o) => o.source !== 'amazon');
@@ -252,9 +265,21 @@ async function checkAmazon(env, product, fetcher, settings, { priority }) {
     else if (!error) product.skipped.push({ domain: AMAZON_DOMAIN, url: `https://www.amazon.de/s?k=${encodeURIComponent(query)}`, why: 'Amazon: nicht gefunden', at: Date.now() });
     return;
   }
-  const verdict = await getShopVerdict(env, AMAZON_DOMAIN, fetcher, settings);
+  // Amazon-Link: Name, Bild und Marke vom Amazon-Ergebnis übernehmen
+  if (product.asin && (product.nameFromUrl || product.nameFromSlug || /^Amazon-Artikel$/.test(product.name)) && hit.title) {
+    product.name = hit.title.split(/\s[-–|]\s|,\s/)[0].slice(0, 120) || hit.title.slice(0, 120);
+    product.nameFromUrl = false;
+    product.nameFromSlug = false;
+    product.lastSearchAt = null; // mit dem echten Namen gleich nach anderen Shops suchen
+  }
+  if (!product.image && hit.image) product.image = hit.image;
+
+  // Bei Amazon zählen in erster Linie die Produktbewertungen
+  let excludedReason;
+  if (hit.rating != null && hit.rating < settings.amazonMinRating) excludedReason = `Amazon-Bewertung ${hit.rating.toFixed(1)} ★ (unter ${settings.amazonMinRating})`;
+  else if (hit.reviews != null && hit.reviews < settings.amazonMinReviews) excludedReason = `Nur ${hit.reviews} Amazon-Bewertungen (mind. ${settings.amazonMinReviews})`;
+
   const shipping = hit.shipping ?? settings.fallbackShipping;
-  const notes = [note, 'Verkäufer bei Amazon prüfen (Amazon oder Drittanbieter)'].filter(Boolean).join(', ');
   product.offers.push({
     source: 'amazon', url: hit.url, domain: AMAZON_DOMAIN, shopName: 'Amazon.de', title: hit.title,
     price: hit.price, shipping, shippingEstimated: hit.shipping == null || hit.shippingEstimated,
@@ -262,10 +287,12 @@ async function checkAmazon(env, product, fetcher, settings, { priority }) {
     oldPrice: hit.oldPrice && hit.oldPrice > hit.price ? hit.oldPrice : null,
     discountPct: hit.oldPrice && hit.oldPrice > hit.price ? Math.round((1 - hit.price / hit.oldPrice) * 100) : null,
     condition: hit.condition, available: hit.available, coupons: [], returnCost: null, seller: null,
-    shop: shopSummary(verdict), manual: false, matchedBy: sameArticle(product, hit).by, matchNote: notes,
+    shop: { allowlisted: true, verified: true, amazonRating: hit.rating ?? null, amazonReviews: hit.reviews ?? null, notes: ['Amazon.de – Bewertung nach Produktbewertungen'] },
+    manual: false, matchedBy: match.by,
+    matchNote: [match.note, hit.rating == null ? 'Keine Amazon-Bewertungen sichtbar' : null].filter(Boolean).join(', ') || null,
+    excludedReason,
     fails: 0, checkedAt: Date.now(), firstSeen: existing?.firstSeen || Date.now(), quotaStale: false,
   });
-  if (!product.image && hit.image) product.image = hit.image;
 }
 
 /**
@@ -278,6 +305,15 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
   const t = Date.now();
   product.lastError = null;
   product.partial = false;
+  // Ältere Produkte mit Amazon-Link auf die ASIN-Abfrage umstellen
+  if (!product.asin && product.sourceUrl && asinOf(product.sourceUrl)) {
+    product.asin = asinOf(product.sourceUrl);
+    product.includeAmazon = true;
+    product.lastAmazonAt = null;
+    product.excluded = product.excluded.filter((e) => e.domain !== AMAZON_DOMAIN);
+    const slug = nameFromUrl(product.sourceUrl);
+    if (product.nameFromUrl && slug) { product.name = slug; product.nameFromUrl = false; product.nameFromSlug = true; }
+  }
   try {
     // Eigener Link (beim Anlegen angegeben)
     // „Jetzt neu prüfen“ bzw. vorübergehende Fehler: ausgeschlossene Shops erneut bewerten
@@ -285,7 +321,8 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
     const srcDomain = product.sourceUrl && domainOf(product.sourceUrl);
     const srcExcluded = product.excluded.find((e) => e.domain === srcDomain);
     const srcDue = !srcExcluded || force || isTemporary(srcExcluded) || t - srcExcluded.at > DAY;
-    if (product.sourceUrl && !product.offers.some((o) => o.manual) && srcDue) {
+    // Amazon-Links werden nicht geladen (Amazon blockiert) – der Artikel kommt über die ASIN-Abfrage
+    if (product.sourceUrl && !product.asin && !product.offers.some((o) => o.manual) && srcDue) {
       await considerCandidate(env, product, fetcher, settings, product.sourceUrl, { manual: true });
     }
 
@@ -299,43 +336,51 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
     // Amazon.de (einmal täglich, nur mit Schalter)
     if (!product.includeAmazon) {
       product.offers = product.offers.filter((o) => o.source !== 'amazon');
-    } else if (!product.nameFromUrl && (force || !product.lastAmazonAt || t - product.lastAmazonAt > AMAZON_INTERVAL_HOURS * HOUR)) {
+    } else if ((!product.nameFromUrl || product.asin) && (force || !product.lastAmazonAt || t - product.lastAmazonAt > AMAZON_INTERVAL_HOURS * HOUR)) {
       await checkAmazon(env, product, fetcher, settings, { priority: force || !product.lastAmazonAt });
     }
 
-    // Neue Shops suchen
+    // Neue Shops suchen. Gefundene Seiten landen in einer Warteschlange: bricht ein Lauf ab
+    // (max. 40 Abrufe pro Lauf), geht es beim nächsten Lauf dort weiter – ohne neue Google-Suche.
     if (product.nameFromUrl) {
       product.searchError = 'Produktname noch unbekannt – Shop-Link konnte nicht gelesen werden';
-    } else if (force || !product.lastSearchAt || t - product.lastSearchAt > SEARCH_INTERVAL_HOURS * HOUR) {
-      const knownDomains = [
-        ...product.offers.map((o) => o.domain),
-        ...product.excluded.filter((e) => t - e.at < 7 * DAY && !isTemporary(e)).map((e) => e.domain),
-      ];
-      const prio = !product.lastSearchAt || force;
-      if (force || !product.lastSearchAt) product.skipped = [];
-      const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: prio });
-      // Bei bekannter EAN zusätzlich direkt nach der EAN suchen (findet Shops mit anderer Bezeichnung)
-      if (prio && product.gtin) {
-        const byEan = await searchCandidates(fetcher, env, product.gtin, settings, { exclude: [...knownDomains, ...candidates.map((c) => c.domain)], priority: true, raw: true });
-        candidates.push(...byEan.candidates);
+    } else {
+      if (force) product.queue = [];
+      const searchDue = force || !product.lastSearchAt || t - product.lastSearchAt > SEARCH_INTERVAL_HOURS * HOUR;
+      if (!product.queue?.length && searchDue) {
+        const knownDomains = [
+          ...product.offers.map((o) => o.domain),
+          ...product.excluded.filter((e) => t - e.at < 7 * DAY && !isTemporary(e)).map((e) => e.domain),
+        ];
+        const prio = !product.lastSearchAt || force;
+        if (prio) product.skipped = [];
+        const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: prio });
+        // Bei bekannter EAN zusätzlich direkt nach der EAN suchen (findet Shops mit anderer Bezeichnung)
+        if (prio && product.gtin) {
+          const byEan = await searchCandidates(fetcher, env, product.gtin, settings, { exclude: [...knownDomains, ...candidates.map((c) => c.domain)], priority: true, raw: true });
+          candidates.push(...byEan.candidates);
+        }
+        product.searchError = error || null;
+        product.searchSource = source || null;
+        product.candidatesFound = candidates.length;
+        product.queue = candidates.slice(0, MAX_CANDIDATES * 2).map((c) => ({ url: c.url, domain: c.domain, blocked: !!c.blocked }));
+        product.lastSearchAt = Date.now(); // sofort merken: kein erneutes Suchen bei Abbruch
       }
-      product.searchError = error || null;
-      product.searchSource = source || null;
-      product.candidatesFound = candidates.length;
-      for (const c of candidates.slice(0, MAX_CANDIDATES * 2)) {
-        if (c.blocked) { excludeDomain(product, c.domain, ['Auf der Sperrliste'], c.url); continue; }
-        if (c.domain === AMAZON_DOMAIN) {
+      while (product.queue?.length) {
+        const c = product.queue[0];
+        if (c.blocked) excludeDomain(product, c.domain, ['Auf der Sperrliste'], c.url);
+        else if (c.domain === AMAZON_DOMAIN) {
           // Amazon blockiert direkte Abrufe – Preis kommt über die Amazon-Abfrage
           if (!product.includeAmazon) {
             product.skipped = (product.skipped || []).filter((x) => x.domain !== c.domain);
             product.skipped.push({ domain: c.domain, url: c.url, why: 'Amazon-Schalter ist aus', at: Date.now() });
           }
-          continue;
+        } else if (!product.offers.some((o) => o.domain === c.domain)) {
+          await considerCandidate(env, product, fetcher, settings, c.url); // bei Budget-Ende bleibt c in der Schlange
         }
-        await considerCandidate(env, product, fetcher, settings, c.url);
-        if (product.offers.length >= 15) break;
+        product.queue.shift();
+        if (product.offers.length >= 15) { product.queue = []; break; }
       }
-      product.lastSearchAt = Date.now();
     }
   } catch (e) {
     if (!(e instanceof BudgetExceeded)) product.lastError = String(e?.message || e);
@@ -364,12 +409,13 @@ export function toClient(p) {
       sizes: [...new Set((p.variants || []).map((v) => v.size).filter(Boolean))],
     },
     includeAmazon: !!p.includeAmazon, amazonError: p.amazonError || null, lastAmazonAt: p.lastAmazonAt || null,
+    asin: p.asin || null, queued: (p.queue || []).length, nameFromSlug: !!p.nameFromSlug,
     createdAt: p.createdAt, lastCheckAt: p.lastCheckAt, lastError: p.lastError, searchError: p.searchError, searchSource: p.searchSource,
     best: best ? { ...best, effectiveTotal: effectiveTotal(best) } : null,
     offers: (p.offers || []).map((o) => ({ ...o, effectiveTotal: o.total != null ? effectiveTotal(o) : null })),
     excluded: p.excluded || [],
     history: p.history || [],
     notify: p.notify || {},
-    pending: !p.lastCheckAt,
+    pending: !p.lastCheckAt || (!p.offers?.length && (p.queue || []).length > 0),
   };
 }

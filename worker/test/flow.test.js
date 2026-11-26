@@ -249,3 +249,27 @@ test('Farbe/Größe als Kriterium: Auswahl aus dem Shop-Link, danach nur passend
   assert.equal(d2.gtin, '5700000000028');
   assert.deepEqual(d2.offers.map((o) => o.domain), ['dilling.de'], 'kein anderer Shop hat Schwarz/L');
 });
+
+test('Warteschlange: Abbruch wegen Abruf-Budget setzt beim nächsten Lauf fort – ohne neue Suche', async () => {
+  const urls = Array.from({ length: 6 }, (_, i) => `https://laden${i}.de/p/${i}`);
+  const routes = { 'https://html.duckduckgo.com/': ddg(urls), ...shop('muster.de', productPage({ name: 'Sony WH-1000XM5 Schwarz', price: 299, shipping: 0 })) };
+  urls.forEach((u, i) => Object.assign(routes, shop(`laden${i}.de`, productPage({ name: 'Sony WH-1000XM5 Schwarz', price: 280 + i, shipping: 0 }))));
+  const web = fakeWeb(routes);
+  globalThis.fetch = web;
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'geheim', SUBREQUEST_BUDGET: '25' };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const call = async (method, path, body) => (await worker.fetch(new Request(`https://api.test${path}`, { method, headers: { Authorization: 'Bearer geheim', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), env, ctx)).json();
+  const p = await call('POST', '/api/products', { query: 'https://muster.de/p/1', includeAmazon: false });
+  await Promise.all(waits);
+  let d = await call('GET', `/api/products/${p.id}`);
+  assert.ok(d.queued > 0, 'Rest wartet in der Schlange');
+  const before = d.offers.length;
+  const searchesBefore = web.calls.filter((c) => c.url.includes('duckduckgo')).length;
+  for (let i = 0; i < 4; i++) await scheduled(env, web);
+  d = await call('GET', `/api/products/${p.id}`);
+  assert.equal(d.queued, 0);
+  assert.equal(d.offers.length, 7, 'Hersteller + 6 Läden');
+  assert.ok(d.offers.length > before);
+  assert.equal(web.calls.filter((c) => c.url.includes('duckduckgo')).length, searchesBefore, 'keine erneute Suche');
+});

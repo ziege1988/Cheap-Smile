@@ -192,3 +192,25 @@ export function uid() {
   crypto.getRandomValues(b);
   return Array.from(b, (x) => x.toString(36).padStart(2, '0')).join('').slice(0, 14);
 }
+
+/**
+ * Produktname aus der Adresse lesen, wenn die Seite selbst nicht abrufbar ist,
+ * z. B. https://www.amazon.de/Sony-WH-1000XM5-Kopfhoerer-Schwarz/dp/B09Y2MYL5C -> "Sony WH 1000XM5 Kopfhoerer Schwarz".
+ */
+export function nameFromUrl(href) {
+  let u;
+  try { u = new URL(href); } catch { return null; }
+  const segs = decodeURIComponent(u.pathname).split('/').filter(Boolean);
+  const dp = segs.findIndex((x) => /^(dp|gp)$/i.test(x));
+  const cands = dp > 0 ? [segs[dp - 1]] : segs;
+  let best = null;
+  for (const seg of cands) {
+    const clean = seg.replace(/\.(html?|php|aspx?)$/i, '');
+    // Interne Kennungen (z. B. Otto „S0G3W0LO“, ASIN) erkennt man am häufigen Wechsel von Buchstaben und Ziffern
+    const isId = (w) => (w.match(/\d+|[a-z]+/gi) || []).length >= 5 || /^\d{5,}$/.test(w) || /^[a-z]?\d{6,}[a-z]?$/i.test(w);
+    const words = clean.split(/[-_+]+/).filter((w) => w && !isId(w) && !/^p$/i.test(w));
+    const letters = words.filter((w) => /[a-zäöüß]{2,}/i.test(w));
+    if (letters.length >= 2 && (!best || words.length > best.length)) best = words;
+  }
+  return best ? best.join(' ').slice(0, 120) : null;
+}

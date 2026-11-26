@@ -21,6 +21,10 @@ export const DEFAULT_SETTINGS = {
   // Versand, wenn nichts erkennbar ist (konservative Schätzung, wird markiert)
   fallbackShipping: 5.95,
 
+  // Amazon: Bewertungen des Produkts sind das Hauptkriterium
+  amazonMinRating: 4.0,        // Sterne (1–5)
+  amazonMinReviews: 20,        // Mindestanzahl Bewertungen
+
   // „Sehr gutes Angebot“-Erkennung
   goodDealDropPct: 12,         // mind. 12 % unter dem 30-Tage-Median
   goodDealMinHistory: 4,       // so viele Messpunkte braucht es mindestens

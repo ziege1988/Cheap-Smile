@@ -79,6 +79,7 @@ function shippingText(o) {
 const cap = (t) => String(t || '').charAt(0).toUpperCase() + String(t || '').slice(1);
 const condLabel = (c) => ({ used: 'Gebraucht', refurbished: 'Refurbished', new: 'Neu' }[c] || c);
 const trustText = (s) => {
+  if (s?.amazonRating != null) return `★ ${s.amazonRating.toFixed(1)} (${(s.amazonReviews || 0).toLocaleString('de-DE')} Bewertungen)`;
   if (s?.allowlisted) return s.verified ? '✓ geprüfter bekannter Händler' : '✓ bekannter Händler';
   if (s?.trustScore != null) return `★ ${s.trustScore.toFixed(1)}${s.trustCount != null ? ` (${s.trustCount.toLocaleString('de-DE')})` : ''} Trustpilot`;
   if (s?.trustUnknown) return '✓ geprüfter Shop';
@@ -88,6 +89,7 @@ const trustText = (s) => {
 /** Grünes Vertrauens-Abzeichen für die Kachel */
 function trustBadge(s) {
   if (!s) return '';
+  if (s.amazonRating != null) return `<span class="badge wish">★ ${s.amazonRating.toFixed(1)} bei Amazon (${(s.amazonReviews || 0).toLocaleString('de-DE')})</span>`;
   if (s.allowlisted) return '<span class="badge wish">✓ Bekannter Händler</span>';
   if (s.trustScore != null) return `<span class="badge wish">★ ${s.trustScore.toFixed(1)} Trustpilot · geprüft</span>`;
   if (s.trustUnknown) return '<span class="badge wish">✓ Geprüfter Shop</span>';
@@ -122,8 +124,8 @@ function relTime(ts) {
 function badgesFor(p) {
   const b = [];
   const best = p.best;
-  if (p.pending) b.push('<span class="badge warn">⏳ Shops werden geprüft…</span>');
-  else if (!best) b.push('<span class="badge warn">Kein seriöses Angebot gefunden</span>');
+  if (p.pending || p.queued) b.push(`<span class="badge warn">⏳ ${p.queued ? `Noch ${p.queued} Shop${p.queued === 1 ? '' : 's'} in Prüfung` : 'Shops werden geprüft…'}</span>`);
+  else if (!best && !p.queued) b.push('<span class="badge warn">Kein seriöses Angebot gefunden</span>');
   if (best && p.wishPrice != null && best.effectiveTotal <= p.wishPrice) b.push('<span class="badge wish">🎯 Wunschpreis erreicht</span>');
   if (best?.discountPct) b.push(`<span class="badge hot">🔥 Aktion −${best.discountPct} %</span>`);
   if (best && best.condition !== 'new') b.push(`<span class="badge gold">${condLabel(best.condition)}</span>`);
@@ -291,6 +293,9 @@ function renderDetail(p) {
     ${offers.length ? offers.map((o) => offerHtml(o, p, o.url === bestUrl)).join('') : '<p class="muted">Noch keine geprüften Angebote.</p>'}
     <p class="hint muted">Gesuchter Artikel: ${[p.brand, p.gtin ? `EAN ${p.gtin}` : '', p.mpn ? `Art.-Nr. ${p.mpn}` : '', p.color ? `Farbe ${p.color}` : '', p.size ? `Größe ${p.size}` : ''].filter(Boolean).map(esc).join(' · ') || 'nur Bezeichnung'}. Andere Shops zählen nur bei gleicher EAN – oder, wenn ein Shop keine EAN angibt, bei gleicher Marke, Bezeichnung, Farbe und Größe.</p>
     ${p.variantHint ? `<p class="hint muted">${esc(p.variantHint)}</p>` : ''}
+    ${p.queued ? `<p class="hint muted">⏳ Noch ${p.queued} gefundene Shop-Seite(n) in der Warteschlange – werden bei den nächsten Läufen (alle 30 Min.) geprüft.</p>` : ''}
+    ${p.nameFromSlug ? '<p class="hint muted">Name vorläufig aus der Adresse gelesen, weil der Shop automatische Abrufe blockiert.</p>' : ''}
+    ${p.asin ? `<p class="hint muted">Amazon-Artikel ${esc(p.asin)} – Abfrage über SerpApi, Bewertung nach Amazon-Produktbewertungen.</p>` : ''}
     ${p.searchSource ? `<p class="hint muted">Gesucht über ${({ google: 'Google', brave: 'Brave', duckduckgo: 'DuckDuckGo' })[p.searchSource] || esc(p.searchSource)}</p>` : ''}
     ${p.searchError ? `<p class="hint muted">Suche: ${esc(p.searchError)}</p>` : ''}
     ${p.skipped?.length ? `<details class="excluded"><summary>Gefunden, aber nicht derselbe Artikel (${p.skipped.length})</summary>
@@ -440,6 +445,8 @@ async function openSettings() {
     f.maxReturnCostPct.value = Math.round(s.maxReturnCostRatio * 100);
     f.goodDealDropPct.value = s.goodDealDropPct;
     f.fallbackShipping.value = s.fallbackShipping;
+    f.amazonMinRating.value = s.amazonMinRating;
+    f.amazonMinReviews.value = s.amazonMinReviews;
     f.requireTrustpilot.checked = !!s.requireTrustpilot;
     f.allowWithoutTrustpilotData.checked = !!s.allowWithoutTrustpilotData;
     f.allowlist.value = s.allowlist.join('\n');
@@ -464,6 +471,8 @@ $('#form-settings').addEventListener('submit', async (e) => {
         maxReturnCostRatio: Number(f.maxReturnCostPct.value) / 100,
         goodDealDropPct: f.goodDealDropPct.value,
         fallbackShipping: f.fallbackShipping.value.replace(',', '.'),
+        amazonMinRating: f.amazonMinRating.value.replace(',', '.'),
+        amazonMinReviews: f.amazonMinReviews.value,
         requireTrustpilot: f.requireTrustpilot.checked,
         allowWithoutTrustpilotData: f.allowWithoutTrustpilotData.checked,
         allowlist: lines(f.allowlist.value),
