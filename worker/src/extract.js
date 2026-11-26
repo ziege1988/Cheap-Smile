@@ -326,6 +326,11 @@ export function extractOffer(html, url, settings = {}, want = {}) {
     colors: [...new Set(entries.map((e) => e.color).filter(Boolean))],
     size: chosen?.size || sizeOfNode(product) || null,
     sizes: [...new Set(entries.map((e) => e.size).filter(Boolean))],
+    // Alle Varianten der Seite (für die Auswahl von Farbe/Größe in der App)
+    variants: entries.filter((e) => e.color || e.size).slice(0, 80).map((e) => ({
+      gtin: e.gtin || null, color: e.color || null, size: e.size || null, price: e.price,
+      available: !/OutOfStock|SoldOut|Discontinued/i.test(String(e.raw?.availability || '')),
+    })),
     mpn: chosenMpn,
     mpns: allMpns,
     isListing: listing,

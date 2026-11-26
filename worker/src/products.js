@@ -91,6 +91,38 @@ export function sameArticle(product, ex) {
   return { ok: true, by: 'Bezeichnung & Merkmale', note: notes.join(', ') || null };
 }
 
+/**
+ * Farbe/Größe als Suchkriterium setzen. Gibt es zur Auswahl eine eigene EAN, wird genau diese verglichen,
+ * sonst über die Merkmale. Leere Auswahl = alle Varianten zulassen.
+ */
+export function applyVariantChoice(product, color, size) {
+  const c = color ? String(color).trim().slice(0, 40) : null;
+  const z = size ? String(size).trim().slice(0, 20) : null;
+  product.color = c;
+  product.size = z;
+  product.userVariant = !!(c || z);
+  const variants = product.variants || [];
+  const fits = variants.filter((v) => (!c || v.color === normColor(c)) && (!z || normSize(v.size) === normSize(z)));
+  const withGtin = fits.filter((v) => v.gtin);
+  if (!c && !z) {
+    product.gtin = null;
+    product.gtins = [...new Set(variants.map((v) => v.gtin).filter(Boolean))];
+    product.variantHint = product.gtins.length ? 'Alle Varianten werden verglichen.' : null;
+  } else if (withGtin.length === 1 || (withGtin.length && c && z)) {
+    product.gtin = withGtin[0].gtin;
+    product.gtins = [];
+    product.variantHint = null;
+  } else if (withGtin.length > 1) {
+    product.gtin = null;
+    product.gtins = withGtin.map((v) => v.gtin); // z. B. nur Farbe gewählt: alle Größen dieser Farbe
+    product.variantHint = null;
+  } else {
+    product.gtin = null;
+    product.gtins = [];
+    product.variantHint = variants.length ? 'Diese Kombination gibt es im Shop-Link nicht – Abgleich über Bezeichnung, Farbe und Größe.' : null;
+  }
+}
+
 /** Lädt eine Produktseite und baut daraus ein Angebot (ohne Shop-Prüfung). */
 async function loadOffer(fetcher, url, settings, want = {}) {
   const page = await fetchText(fetcher, url);
@@ -119,18 +151,24 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
     return;
   }
   if (manual) {
+    // Varianten-Auswahl (Farbe/Größe) für die App merken
+    if (ex.variants?.length) product.variants = ex.variants;
     // Eigener Link legt fest, welcher Artikel (inkl. Variante) gesucht ist
     if (!product.gtin && !product.gtins?.length && !product.mpn) {
-      if (ex.ambiguousVariant && ex.gtins.length > 1) {
-        product.gtins = ex.gtins; // Variante nicht eindeutig: alle Varianten dieses Artikels zulassen
-        product.variantHint = 'Größe/Farbe im Link nicht eindeutig – alle Varianten dieses Artikels werden verglichen.';
-      } else {
-        product.gtin = ex.gtin || null;
-      }
       product.mpn = ex.mpn || null;
       product.brand = ex.brand || null;
-      product.color = ex.color || colorsInText(ex.title)[0] || null;
-      product.size = ex.size || null;
+      if (product.userVariant) {
+        // Farbe/Größe vom Nutzer vorgegeben: passende Variante festlegen
+        applyVariantChoice(product, product.color, product.size);
+        if (!product.variants?.length && ex.gtin) product.gtin = ex.gtin; // Seite ohne Varianten = genau dieser Artikel
+      } else if (ex.ambiguousVariant && ex.gtins.length > 1) {
+        product.gtins = ex.gtins; // Variante nicht eindeutig: alle Varianten dieses Artikels zulassen
+        product.variantHint = 'Farbe/Größe im Link nicht eindeutig – alle Varianten werden verglichen. In den Details kannst du eine Variante wählen.';
+      } else {
+        product.gtin = ex.gtin || null;
+        product.color = ex.color || colorsInText(ex.title)[0] || null;
+        product.size = ex.size || null;
+      }
     }
   }
   const match = manual ? { ok: true, by: 'eigener Link' } : sameArticle(product, ex);
@@ -178,6 +216,7 @@ async function refreshOffer(env, product, fetcher, settings, o) {
   const verdict = await getShopVerdict(env, o.domain, fetcher, settings);
   if (!verdict.ok) { excludeDomain(product, o.domain, verdict.reasons, o.url); return; }
   Object.assign(o, {
+    url: ex.url && domainOf(ex.url) === o.domain ? ex.url : o.url, // z. B. Link zur gewählten Variante
     title: ex.title || o.title, price: ex.price, shipping: ex.shipping, shippingEstimated: ex.shippingEstimated,
     freeShippingFrom: ex.freeShippingFrom, total: ex.total, currency: ex.currency, oldPrice: ex.oldPrice,
     discountPct: ex.discountPct, condition: ex.condition, available: ex.available, coupons: ex.coupons, seller: ex.sellerName,
@@ -319,6 +358,11 @@ export function toClient(p) {
     id: p.id, name: p.name, image: p.image, wishPrice: p.wishPrice, allowUsed: !!p.allowUsed,
     variantHint: p.variantHint || null, gtin: p.gtin || null, mpn: p.mpn || null, brand: p.brand || null,
     color: p.color || null, size: p.size || null, skipped: p.skipped || [], candidatesFound: p.candidatesFound ?? null,
+    userVariant: !!p.userVariant,
+    variantOptions: {
+      colors: [...new Set((p.variants || []).map((v) => v.color).filter(Boolean))],
+      sizes: [...new Set((p.variants || []).map((v) => v.size).filter(Boolean))],
+    },
     includeAmazon: !!p.includeAmazon, amazonError: p.amazonError || null, lastAmazonAt: p.lastAmazonAt || null,
     createdAt: p.createdAt, lastCheckAt: p.lastCheckAt, lastError: p.lastError, searchError: p.searchError, searchSource: p.searchSource,
     best: best ? { ...best, effectiveTotal: effectiveTotal(best) } : null,

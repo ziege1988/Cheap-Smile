@@ -76,6 +76,7 @@ function shippingText(o) {
   if (o.shippingEstimated) return `inkl. ~${eur(o.shipping)} Versand (geschätzt)`;
   return `inkl. ${eur(o.shipping)} Versand`;
 }
+const cap = (t) => String(t || '').charAt(0).toUpperCase() + String(t || '').slice(1);
 const condLabel = (c) => ({ used: 'Gebraucht', refurbished: 'Refurbished', new: 'Neu' }[c] || c);
 const trustText = (s) => {
   if (s?.allowlisted) return s.verified ? '✓ geprüfter bekannter Händler' : '✓ bekannter Händler';
@@ -143,6 +144,7 @@ function tileHtml(p) {
       <div class="thumb">${p.image ? `<img src="${esc(safeUrl(p.image))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🛍️'}))">` : '<span>🛍️</span>'}</div>
       <div class="tile-info">
         <div class="tile-name">${esc(p.name)}</div>
+        ${p.color || p.size ? `<div class="sub">${[p.color ? cap(p.color) : '', p.size ? `Größe ${esc(p.size)}` : ''].filter(Boolean).map(esc).join(' · ')}</div>` : ''}
         ${best
           ? `<div class="price">${eur(best.effectiveTotal)}</div>
              <div class="sub">${best.oldPrice ? `<span class="old">${eur(best.oldPrice)}</span>` : ''}${esc(shippingText(best))}</div>
@@ -243,13 +245,32 @@ function offerHtml(o, p, isBest) {
   </div>`;
 }
 
+/** Auswahl von Farbe/Größe: Listen aus dem Shop-Link, sonst freie Eingabe */
+function variantPicker(p) {
+  const o = p.variantOptions || { colors: [], sizes: [] };
+  const sel = (name, label, list, value, allLabel) => list.length
+    ? `<label class="field"><span>${label}</span><select name="${name}" class="select">
+        <option value="">${allLabel}</option>
+        ${list.map((v) => `<option value="${esc(v)}" ${String(value || '').toLowerCase() === String(v).toLowerCase() ? 'selected' : ''}>${esc(cap(v))}</option>`).join('')}
+      </select></label>`
+    : `<label class="field"><span>${label}</span><input name="${name}" value="${esc(value || '')}" placeholder="${allLabel}" autocomplete="off"></label>`;
+  return `<form id="form-variant" style="margin-top:14px">
+    <div class="two">
+      ${sel('color', 'Farbe', o.colors, p.color, 'Alle Farben')}
+      ${sel('size', 'Größe', o.sizes, p.size, 'Alle Größen')}
+    </div>
+    <button class="btn small" style="margin-top:10px">Variante übernehmen</button>
+    ${o.colors.length || o.sizes.length ? '' : '<p class="hint muted">Im Shop-Link wurden keine Varianten erkannt – Farbe/Größe kannst du frei eintragen.</p>'}
+  </form>`;
+}
+
 function renderDetail(p) {
   $('#d-title').textContent = p.name;
   const offers = [...(p.offers || [])].sort((a, b) => (a.effectiveTotal ?? 1e9) - (b.effectiveTotal ?? 1e9));
   const bestUrl = p.best?.url;
   $('#d-body').innerHTML = `
     <div class="d-hero">
-      <div class="thumb">${p.image ? `<img src="${esc(safeUrl(p.image))}" alt="" referrerpolicy="no-referrer">` : '<span>🛍️</span>'}</div>
+      <div class="thumb">${p.image ? `<img src="${esc(safeUrl(p.image))}" alt="" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🛍️'}))">` : '<span>🛍️</span>'}</div>
       <div>
         <div class="price">${eur(p.best?.effectiveTotal)} <small>inkl. Versand</small></div>
         <div class="sub">Zuletzt geprüft ${relTime(p.lastCheckAt)}</div>
@@ -261,6 +282,7 @@ function renderDetail(p) {
       <label class="field"><span>Wunschpreis (€)</span><input name="wishPrice" inputmode="decimal" value="${p.wishPrice ?? ''}" placeholder="kein Wunschpreis"></label>
       <button class="btn">Speichern</button>
     </form>
+    ${variantPicker(p)}
     <label class="switch-row"><span><strong>Gebrauchte Artikel erlauben</strong><small class="muted">Gebraucht, refurbished, B-Ware</small></span>
       <input type="checkbox" class="switch" id="d-used" ${p.allowUsed ? 'checked' : ''}></label>
     <label class="switch-row"><span><strong>Amazon einbeziehen</strong><small class="muted">${p.includeAmazon ? (p.lastAmazonAt ? `Zuletzt abgefragt ${relTime(p.lastAmazonAt)}` : 'Wird beim nächsten Lauf abgefragt') : 'Aus – spart Suchkontingent'}${p.amazonError && !amazonPaused() ? ` · ${esc(p.amazonError)}` : ''}</small>${p.includeAmazon && amazonPaused() ? `<small style="color:var(--warn);display:block;margin-top:4px">⚠️ Kann aktuell nicht bei Amazon anfragen: ${esc(quotaText())}</small>` : ''}</span>
@@ -288,6 +310,14 @@ function renderDetail(p) {
     toast('Wunschpreis gespeichert');
   };
   $('#d-used').onchange = (e) => update(p.id, { allowUsed: e.target.checked });
+  $('#form-variant').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await update(p.id, { color: String(f.get('color') || '').trim() || null, size: String(f.get('size') || '').trim() || null });
+    toast('Variante übernommen – Shops werden neu geprüft …', 3500);
+    setTimeout(() => load({ silent: true }), 15000);
+    setTimeout(() => load({ silent: true }), 40000);
+  };
   $('#d-amazon').onchange = (e) => {
     update(p.id, { includeAmazon: e.target.checked });
     if (e.target.checked && amazonPaused()) toast(`Eingeschaltet – Amazon kann aktuell aber nicht abgefragt werden. ${quotaText()}`, 6000);
@@ -371,6 +401,8 @@ $('#form-add').addEventListener('submit', async (e) => {
       wishPrice: f.get('wishPrice') ? String(f.get('wishPrice')).replace(',', '.') : null,
       allowUsed: f.get('allowUsed') === 'on',
       includeAmazon: f.get('includeAmazon') === 'on',
+      color: String(f.get('color') || '').trim() || null,
+      size: String(f.get('size') || '').trim() || null,
     } });
     products.unshift(p);
     render();

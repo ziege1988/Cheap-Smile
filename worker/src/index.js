@@ -4,7 +4,7 @@
 
 import { createFetcher, uid, domainOf } from './util.js';
 import { getSettings, saveSettings, getProduct, saveProduct, deleteProduct, allProducts, getSubs, addSub, removeSub } from './store.js';
-import { checkProduct, toClient } from './products.js';
+import { checkProduct, toClient, applyVariantChoice } from './products.js';
 import { bestOffer, effectiveTotal } from './deal.js';
 import { sendPush, b64urlEncode } from './push.js';
 import { quotaStatus } from './search.js';
@@ -110,6 +110,9 @@ async function handleApi(req, env, ctx, url) {
       nameFromUrl: isUrl && !body.name,
       sourceUrl: isUrl ? q : null,
       wishPrice: wish, allowUsed: !!body.allowUsed, includeAmazon: body.includeAmazon !== false,
+      color: body.color ? String(body.color).trim().slice(0, 40) : null,
+      size: body.size ? String(body.size).trim().slice(0, 20) : null,
+      userVariant: !!(body.color || body.size),
       offers: [], excluded: [], history: [], notify: {},
     };
     await saveProduct(env, product);
@@ -146,11 +149,19 @@ async function handleApi(req, env, ctx, url) {
         else product.lastAmazonAt = null;
       }
       const amazonTurnedOn = body.includeAmazon === true;
+      let variantChanged = false;
+      if ('color' in body || 'size' in body) {
+        applyVariantChoice(product, 'color' in body ? body.color : product.color, 'size' in body ? body.size : product.size);
+        product.notify = { lastAlertAt: product.notify?.lastAlertAt }; // anderer Artikel -> Alarme neu
+        product.history = [];
+        variantChanged = true;
+      }
       if (typeof body.name === 'string' && body.name.trim()) product.name = body.name.trim().slice(0, 120);
       const best = bestOffer(product);
       product.best = best ? { domain: best.domain, total: effectiveTotal(best), url: best.url } : null;
       await saveProduct(env, product);
-      if (amazonTurnedOn) ctx.waitUntil(runCheck(env, product).catch((e) => console.log('check error', e)));
+      if (variantChanged) ctx.waitUntil(runCheck(env, product, { force: true }).catch((e) => console.log('check error', e)));
+      else if (amazonTurnedOn) ctx.waitUntil(runCheck(env, product).catch((e) => console.log('check error', e)));
       return json(toClient(product), 200, env);
     }
   }

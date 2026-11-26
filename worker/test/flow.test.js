@@ -209,3 +209,43 @@ test('Ohne EAN beim Händler: Abgleich über Marke, Bezeichnung, Farbe und Grö�
   assert.match(why['andere-farbe.de'], /Farbe/);
   assert.match(why['anderes-modell.de'], /Bezeichnung/);
 });
+
+test('Farbe/Größe als Kriterium: Auswahl aus dem Shop-Link, danach nur passende Angebote', async () => {
+  const group = `<script type="application/ld+json">${JSON.stringify({ '@type': 'ProductGroup', name: 'Merino Shirt Damen', brand: { '@type': 'Brand', name: 'Dilling' }, productGroupID: 'MS', hasVariant: [
+    { '@type': 'Product', name: 'Merino Shirt Damen', color: 'Schwarz', size: 'M', gtin13: '5700000000011', offers: { '@type': 'Offer', price: '39.95', priceCurrency: 'EUR', url: 'https://dilling.de/p/ms?variant=1' } },
+    { '@type': 'Product', name: 'Merino Shirt Damen', color: 'Schwarz', size: 'L', gtin13: '5700000000028', offers: { '@type': 'Offer', price: '39.95', priceCurrency: 'EUR', url: 'https://dilling.de/p/ms?variant=2' } },
+    { '@type': 'Product', name: 'Merino Shirt Damen', color: 'Navy', size: 'M', gtin13: '5700000000035', offers: { '@type': 'Offer', price: '42.95', priceCurrency: 'EUR', url: 'https://dilling.de/p/ms?variant=3' } },
+  ] })}</script>`;
+  const web = fakeWeb({
+    'https://html.duckduckgo.com/': ddg(['https://shop-navy.de/p/1', 'https://shop-schwarz.de/p/2']),
+    ...shop('dilling.de', group),
+    ...shop('shop-navy.de', productPage({ name: 'Dilling Merino Shirt Damen navy', price: 35, shipping: 0, gtin: '5700000000035' })),
+    ...shop('shop-schwarz.de', productPage({ name: 'Dilling Merino Shirt Damen schwarz', price: 33, shipping: 0, gtin: '5700000000011' })),
+  });
+  globalThis.fetch = web;
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'geheim' };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const call = async (method, path, body) => (await worker.fetch(new Request(`https://api.test${path}`, { method, headers: { Authorization: 'Bearer geheim', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), env, ctx)).json();
+
+  const p = await call('POST', '/api/products', { query: 'https://dilling.de/p/ms', includeAmazon: false });
+  await Promise.all(waits); waits.length = 0;
+  let d = await call('GET', `/api/products/${p.id}`);
+  assert.deepEqual(d.variantOptions, { colors: ['schwarz', 'navy'], sizes: ['M', 'L'] });
+  assert.equal(d.offers.length, 3, 'ohne Auswahl: alle Varianten zählen');
+
+  d = await call('PATCH', `/api/products/${p.id}`, { color: 'navy', size: 'M' });
+  await Promise.all(waits); waits.length = 0;
+  d = await call('GET', `/api/products/${p.id}`);
+  assert.equal(d.gtin, '5700000000035', 'EAN der gewählten Variante');
+  assert.deepEqual(d.offers.map((o) => o.domain).sort(), ['dilling.de', 'shop-navy.de']);
+  assert.equal(d.offers.find((o) => o.manual).price, 42.95, 'Preis der gewählten Variante beim Hersteller');
+  assert.equal(d.offers.find((o) => o.manual).url, 'https://dilling.de/p/ms?variant=3', 'Link direkt zur Variante');
+
+  // Direkt beim Anlegen vorgegeben
+  const p2 = await call('POST', '/api/products', { query: 'https://dilling.de/p/ms', color: 'Schwarz', size: 'L', includeAmazon: false });
+  await Promise.all(waits);
+  const d2 = await call('GET', `/api/products/${p2.id}`);
+  assert.equal(d2.gtin, '5700000000028');
+  assert.deepEqual(d2.offers.map((o) => o.domain), ['dilling.de'], 'kein anderer Shop hat Schwarz/L');
+});
