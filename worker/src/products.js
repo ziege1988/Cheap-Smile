@@ -3,7 +3,7 @@
 
 import { MAX_CANDIDATES, SEARCH_INTERVAL_HOURS, PRICE_INTERVAL_HOURS } from './config.js';
 import { fetchText, domainOf, matchScore, BudgetExceeded, HOUR, DAY } from './util.js';
-import { extractOffer, normGtin, normMpn } from './extract.js';
+import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText } from './extract.js';
 import { getShopVerdict } from './shopcheck.js';
 import { searchCandidates } from './search.js';
 import { applyOfferRules, recordHistory, evaluateAlerts, bestOffer, effectiveTotal } from './deal.js';
@@ -41,41 +41,80 @@ function excludeDomain(product, domain, reasons, url, retryable = false) {
 }
 
 /** Eindeutige Kennung des gesuchten Artikels (vom eigenen Link übernommen). */
-export const identityOf = (p) => ({ gtin: p.gtin || null, gtins: p.gtins || [], mpn: p.mpn || null });
+export const identityOf = (p) => ({ gtin: p.gtin || null, gtins: p.gtins || [], mpn: p.mpn || null, color: p.color || null, size: p.size || null });
+
+const COLOR_TOKENS = new Set(['schwarz', 'black', 'weiss', 'white', 'grau', 'grey', 'gray', 'blau', 'blue', 'navy', 'rot', 'red', 'gruen', 'green', 'beige', 'braun', 'brown', 'rosa', 'pink', 'natur']);
+/** Name ohne Farb-/Größenangaben – diese werden separat verglichen. */
+function coreName(name) {
+  return String(name || '').split(/[,|/()]+/).join(' ')
+    .split(/\s+/).filter((w) => !COLOR_TOKENS.has(w.toLowerCase()) && !/^(gr\.?|größe|size|xx?[sl]|[sml]|\d{2,3}(\/\d{2,3})?)$/i.test(w)).join(' ');
+}
 
 /**
  * Ist das Angebot exakt derselbe Artikel?
- * 1. EAN/GTIN (inkl. Variante) muss übereinstimmen, sonst
- * 2. Herstellernummer (MPN), sonst
- * 3. nur Name bekannt: alle Wörter inkl. Modellnummer müssen im Titel stehen.
+ * 1. EAN/GTIN vorhanden auf beiden Seiten: muss übereinstimmen (inkl. Variante).
+ * 2. Herstellernummer (MPN) auf beiden Seiten: muss übereinstimmen.
+ * 3. Sonst Merkmale: Marke, Produktbezeichnung (inkl. Modellnummer), Farbe und Größe.
  */
 export function sameArticle(product, ex) {
   if (ex.isListing) return { ok: false, why: 'Listen-/Kategorieseite statt Produktseite' };
   const gs = new Set([product.gtin, ...(product.gtins || [])].map(normGtin).filter(Boolean));
-  if (gs.size) return gs.has(normGtin(ex.gtin)) ? { ok: true } : { ok: false, why: 'Andere EAN/Variante' };
-  const m = normMpn(product.mpn);
-  if (m) return normMpn(ex.mpn) === m ? { ok: true } : { ok: false, why: 'Andere Herstellernummer' };
-  const b1 = String(product.brand || '').toLowerCase(), b2 = String(ex.brand || '').toLowerCase();
-  if (b1 && b2 && !b1.includes(b2) && !b2.includes(b1)) return { ok: false, why: 'Andere Marke' };
-  return matchScore(product.name, ex.title) >= 1 ? { ok: true } : { ok: false, why: 'Titel passt nicht exakt' };
+  const exG = normGtin(ex.gtin);
+  if (gs.size && exG) return gs.has(exG) ? { ok: true, by: 'EAN' } : { ok: false, why: 'Andere EAN (anderer Artikel oder andere Variante)' };
+  const m = normMpn(product.mpn), exM = normMpn(ex.mpn);
+  if (m && exM) return m === exM ? { ok: true, by: 'Herstellernummer' } : { ok: false, why: 'Andere Herstellernummer' };
+
+  // Merkmale
+  const b1 = String(product.brand || '').toLowerCase().trim(), b2 = String(ex.brand || '').toLowerCase().trim();
+  if (b1 && b2 && !b1.includes(b2) && !b2.includes(b1)) return { ok: false, why: `Andere Marke (${ex.brand})` };
+  if (b1 && !b2 && !String(ex.title).toLowerCase().includes(b1)) return { ok: false, why: 'Marke nicht im Titel' };
+  const fromLink = !!product.sourceUrl;
+  const score = matchScore(coreName(product.name), coreName(ex.title));
+  if (score < (fromLink ? 0.8 : 1)) return { ok: false, why: `Bezeichnung weicht ab (${Math.round(score * 100)} % gleich)` };
+
+  const notes = [];
+  const refC = normColor(product.color) || (fromLink ? null : colorsInText(product.name)[0]);
+  if (refC) {
+    const exC = normColor(ex.color);
+    const exAll = new Set([exC, ...(ex.colors || []), ...colorsInText(`${ex.title} ${ex.url}`)].filter(Boolean));
+    if (exC && exC !== refC && !exAll.has(refC)) return { ok: false, why: `Andere Farbe (${ex.color})` };
+    if (!exAll.size) notes.push('Farbe im Shop prüfen');
+    else if (!exAll.has(refC)) return { ok: false, why: 'Farbe nicht erhältlich' };
+  }
+  const refS = normSize(product.size);
+  if (refS) {
+    const sizes = new Set([normSize(ex.size), ...(ex.sizes || []).map(normSize)].filter(Boolean));
+    if (sizes.size && !sizes.has(refS)) return { ok: false, why: `Größe ${product.size} nicht erhältlich` };
+    if (!sizes.size) notes.push(`Größe ${product.size} im Shop wählen`);
+  }
+  return { ok: true, by: 'Bezeichnung & Merkmale', note: notes.join(', ') || null };
 }
 
 /** Lädt eine Produktseite und baut daraus ein Angebot (ohne Shop-Prüfung). */
 async function loadOffer(fetcher, url, settings, want = {}) {
   const page = await fetchText(fetcher, url);
-  if (!page.ok) return { error: `HTTP ${page.status || 'Fehler'}` };
+  if (!page.ok) {
+    const blocked = [401, 403, 429, 503].includes(page.status);
+    return { error: blocked ? `Shop blockiert automatische Abrufe (HTTP ${page.status})` : `Seite nicht erreichbar (HTTP ${page.status || 'Fehler'})` };
+  }
   const ex = extractOffer(page.text, page.url || url, settings, want);
-  if (ex.isListing) return { error: 'Listen-/Kategorieseite statt Produktseite', ex };
-  if (ex.price == null) return { error: (want.gtin || want.gtins?.length || want.mpn) ? 'Gesuchte Variante nicht auf der Seite' : 'Kein Preis erkennbar', ex };
-  return { ex };
+  if (ex.isListing) return { error: 'Listen-/Kategorieseite statt Produktseite', ex, html: page.text };
+  if (ex.price == null) return { error: 'Kein Preis erkennbar (Variante fehlt oder Seite ohne Produktdaten)', ex, html: page.text };
+  return { ex, html: page.text };
 }
 
 async function considerCandidate(env, product, fetcher, settings, url, { manual = false } = {}) {
   const domain = domainOf(url);
   if (!domain) return;
-  const { ex, error } = await loadOffer(fetcher, url, settings, identityOf(product));
+  const { ex, error, html } = await loadOffer(fetcher, url, settings, identityOf(product));
+  const skip = (why) => {
+    if (manual) return;
+    product.skipped = (product.skipped || []).filter((x) => x.domain !== domain);
+    product.skipped.push({ domain, url, why, at: Date.now() });
+  };
   if (error) {
     if (manual) product.lastError = `Eigener Link: ${error}`;
+    skip(error);
     return;
   }
   if (manual) {
@@ -89,10 +128,12 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
       }
       product.mpn = ex.mpn || null;
       product.brand = ex.brand || null;
+      product.color = ex.color || colorsInText(ex.title)[0] || null;
+      product.size = ex.size || null;
     }
-  } else if (!sameArticle(product, ex).ok) {
-    return; // nicht exakt derselbe Artikel
   }
+  const match = manual ? { ok: true, by: 'eigener Link' } : sameArticle(product, ex);
+  if (!match.ok) { skip(match.why); return; } // nicht exakt derselbe Artikel
   // Produktname und Bild sofort übernehmen – auch wenn der Shop danach ausgeschlossen wird,
   // damit die Suche nach weiteren Shops mit dem echten Produktnamen läuft.
   if (manual && product.nameFromUrl && ex.title) {
@@ -101,8 +142,9 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
   }
   if (manual && !product.image && ex.image) product.image = ex.image;
 
-  const verdict = await getShopVerdict(env, domain, fetcher, settings);
+  const verdict = await getShopVerdict(env, domain, fetcher, settings, { pageHtml: html, pageUrl: ex.url });
   if (!verdict.ok) { excludeDomain(product, domain, verdict.reasons, url, verdict.retryable); return; }
+  product.skipped = (product.skipped || []).filter((x) => x.domain !== domain);
   if (!product.image && ex.image) product.image = ex.image;
 
   const offer = {
@@ -111,7 +153,7 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
     freeShippingFrom: ex.freeShippingFrom, total: ex.total, currency: ex.currency,
     oldPrice: ex.oldPrice, discountPct: ex.discountPct, condition: ex.condition, available: ex.available,
     coupons: ex.coupons, returnCost: verdict.returns?.returnCost ?? null, seller: ex.sellerName,
-    shop: shopSummary(verdict), manual, fails: 0, checkedAt: Date.now(), firstSeen: Date.now(),
+    shop: shopSummary(verdict), manual, matchedBy: match.by, matchNote: match.note || null, fails: 0, checkedAt: Date.now(), firstSeen: Date.now(),
   };
   product.excluded = (product.excluded || []).filter((e) => e.domain !== domain);
   product.offers = (product.offers || []).filter((o) => o.domain !== domain);
@@ -128,7 +170,9 @@ async function refreshOffer(env, product, fetcher, settings, o) {
     if (o.fails >= 3) o.stale = true;
     return;
   }
-  if (!o.manual && !sameArticle(product, ex).ok) { o.remove = true; return; }
+  const m = o.manual ? { ok: true, by: 'eigener Link' } : sameArticle(product, ex);
+  if (!m.ok) { o.remove = true; return; }
+  o.matchedBy = m.by; o.matchNote = m.note || null;
   // Shop-Urteil kann inzwischen abgelaufen sein -> erneut (gecacht) prüfen
   const verdict = await getShopVerdict(env, o.domain, fetcher, settings);
   if (!verdict.ok) { excludeDomain(product, o.domain, verdict.reasons, o.url); return; }
@@ -176,9 +220,17 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
         ...product.offers.map((o) => o.domain),
         ...product.excluded.filter((e) => t - e.at < 7 * DAY && !isTemporary(e)).map((e) => e.domain),
       ];
-      const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: !product.lastSearchAt || force });
+      const prio = !product.lastSearchAt || force;
+      if (force || !product.lastSearchAt) product.skipped = [];
+      const { candidates, error, source } = await searchCandidates(fetcher, env, product.name, settings, { exclude: knownDomains, priority: prio });
+      // Bei bekannter EAN zusätzlich direkt nach der EAN suchen (findet Shops mit anderer Bezeichnung)
+      if (prio && product.gtin) {
+        const byEan = await searchCandidates(fetcher, env, product.gtin, settings, { exclude: [...knownDomains, ...candidates.map((c) => c.domain)], priority: true, raw: true });
+        candidates.push(...byEan.candidates);
+      }
       product.searchError = error || null;
       product.searchSource = source || null;
+      product.candidatesFound = candidates.length;
       for (const c of candidates.slice(0, MAX_CANDIDATES * 2)) {
         if (c.blocked) { excludeDomain(product, c.domain, ['Auf der Sperrliste'], c.url); continue; }
         await considerCandidate(env, product, fetcher, settings, c.url);
@@ -205,7 +257,8 @@ export function toClient(p) {
   const best = bestOffer(p);
   return {
     id: p.id, name: p.name, image: p.image, wishPrice: p.wishPrice, allowUsed: !!p.allowUsed,
-    variantHint: p.variantHint || null, gtin: p.gtin || null,
+    variantHint: p.variantHint || null, gtin: p.gtin || null, mpn: p.mpn || null, brand: p.brand || null,
+    color: p.color || null, size: p.size || null, skipped: p.skipped || [], candidatesFound: p.candidatesFound ?? null,
     createdAt: p.createdAt, lastCheckAt: p.lastCheckAt, lastError: p.lastError, searchError: p.searchError, searchSource: p.searchSource,
     best: best ? { ...best, effectiveTotal: effectiveTotal(best) } : null,
     offers: (p.offers || []).map((o) => ({ ...o, effectiveTotal: o.total != null ? effectiveTotal(o) : null })),

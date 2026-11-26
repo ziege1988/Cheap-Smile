@@ -151,7 +151,7 @@ test('Shop-Link: Name sofort übernommen, nach Sperre wird bei „Jetzt neu prü
   assert.match(d.excluded[0].reasons[0], /nicht erreichbar/);
 
   blocked = false;
-  await env.DB.delete('shop2:dilling.de'); // 6-h-Cache simuliert abgelaufen
+  await env.DB.delete('shop3:dilling.de'); // 6-h-Cache simuliert abgelaufen
   d = (await call('POST', `/api/products/${p.id}/refresh`)).product;
   assert.equal(d.offers.length, 1, 'Shop nach erneuter Prüfung zugelassen');
   assert.equal(d.excluded.length, 0);
@@ -181,4 +181,31 @@ test('Nur exakt derselbe Artikel: andere EAN, ähnliche Titel und Kategorieseite
   assert.equal(d.best.domain, 'haendler-a.de');
   assert.equal(d.best.url, 'https://haendler-a.de/p/1');
   assert.equal(d.best.shop.checks.register, true);
+});
+
+test('Ohne EAN beim Händler: Abgleich über Marke, Bezeichnung, Farbe und Größe – mit Begründung bei Ablehnung', async () => {
+  const pg = (o) => `<script type="application/ld+json">${JSON.stringify({ '@type': 'Product', name: o.name, brand: { '@type': 'Brand', name: o.brand }, ...(o.gtin ? { gtin13: o.gtin } : {}), ...(o.color ? { color: o.color } : {}),
+    offers: { '@type': 'Offer', price: String(o.price), priceCurrency: 'EUR', shippingDetails: { '@type': 'OfferShippingDetails', shippingRate: { '@type': 'MonetaryAmount', value: 0 } } } })}</script>`;
+  const web = fakeWeb({
+    'https://html.duckduckgo.com/': ddg(['https://amaz-shop.de/p/1', 'https://kids-club.de/p/2', 'https://andere-farbe.de/p/3', 'https://anderes-modell.de/p/4']),
+    ...shop('hersteller.de', pg({ name: 'Lilliputiens Stoffbuch Lia Rot', brand: 'Lilliputiens', gtin: '5414834000011', color: 'Rot', price: 29.9 })),
+    ...shop('amaz-shop.de', pg({ name: 'Lilliputiens 86751 Stoffbuch Lia - Rot', brand: 'Lilliputiens', color: 'rot', price: 24.5 })),
+    ...shop('kids-club.de', pg({ name: 'Stoffbuch Lia von Lilliputiens, rot', brand: 'Lilliputiens', price: 22 })),
+    ...shop('andere-farbe.de', pg({ name: 'Lilliputiens Stoffbuch Lia Blau', brand: 'Lilliputiens', color: 'Blau', price: 19 })),
+    ...shop('anderes-modell.de', pg({ name: 'Lilliputiens Stoffbuch Jack Rot', brand: 'Lilliputiens', color: 'Rot', price: 18 })),
+  });
+  globalThis.fetch = web;
+  const env = { DB: new MemoryKV(), APP_TOKEN: 'geheim' };
+  const waits = [];
+  const ctx = { waitUntil: (p) => waits.push(p) };
+  const call = async (method, path, body) => (await worker.fetch(new Request(`https://api.test${path}`, { method, headers: { Authorization: 'Bearer geheim', 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }), env, ctx)).json();
+  const p = await call('POST', '/api/products', { query: 'https://hersteller.de/p/lia' });
+  await Promise.all(waits);
+  const d = await call('GET', `/api/products/${p.id}`);
+  assert.deepEqual(d.offers.map((o) => o.domain).sort(), ['amaz-shop.de', 'hersteller.de', 'kids-club.de']);
+  assert.equal(d.best.domain, 'kids-club.de');
+  assert.equal(d.best.matchedBy, 'Bezeichnung & Merkmale');
+  const why = Object.fromEntries(d.skipped.map((x) => [x.domain, x.why]));
+  assert.match(why['andere-farbe.de'], /Farbe/);
+  assert.match(why['anderes-modell.de'], /Bezeichnung/);
 });

@@ -75,8 +75,8 @@ async function ddgSearch(fetcher, query) {
 }
 
 /** Liefert eindeutige Kandidaten-URLs (max. eine pro Domain). */
-export async function searchCandidates(fetcher, env, query, settings, { exclude = [], priority = false } = {}) {
-  const q = `${query} kaufen`;
+export async function searchCandidates(fetcher, env, query, settings, { exclude = [], priority = false, raw = false } = {}) {
+  const q = raw ? String(query) : `${query} kaufen`;
   const errors = [];
   let result = { urls: [] };
   if (env.SERPAPI_KEY) {

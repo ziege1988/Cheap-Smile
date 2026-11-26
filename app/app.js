@@ -213,6 +213,8 @@ function offerHtml(o, p, isBest) {
       ${o.shop?.allowlisted && o.shop?.trustScore != null ? `<span>Trustpilot ★ ${o.shop.trustScore.toFixed(1)}</span>` : ''}
       ${o.seller ? `<span>Verkäufer: ${esc(o.seller)}</span>` : ''}
       ${checksText(o.shop) ? `<span style="color:var(--brand)">Geprüft: ${esc(checksText(o.shop))}</span>` : `${o.shop?.country ? `<span>Sitz: ${esc(o.shop.country)}</span>` : ''}${o.shop?.withdrawalDays ? `<span>${o.shop.withdrawalDays} Tage Widerruf</span>` : ''}`}
+      ${o.matchedBy ? `<span>Abgleich: ${esc(o.matchedBy)}</span>` : ''}
+      ${o.matchNote ? `<span style="color:var(--warn)">⚠️ ${esc(o.matchNote)}</span>` : ''}
       ${why ? `<span style="color:var(--hot)">${esc(why)}</span>` : ''}
     </div>
     <div class="offer-actions">
@@ -244,10 +246,13 @@ function renderDetail(p) {
       <input type="checkbox" class="switch" id="d-used" ${p.allowUsed ? 'checked' : ''}></label>
     <h3>Angebote (${offers.length})</h3>
     ${offers.length ? offers.map((o) => offerHtml(o, p, o.url === bestUrl)).join('') : '<p class="muted">Noch keine geprüften Angebote.</p>'}
-    ${p.gtin ? `<p class="hint muted">Exakter Abgleich über EAN ${esc(p.gtin)} – andere Shops zählen nur mit genau diesem Artikel.</p>` : ''}
+    <p class="hint muted">Gesuchter Artikel: ${[p.brand, p.gtin ? `EAN ${p.gtin}` : '', p.mpn ? `Art.-Nr. ${p.mpn}` : '', p.color ? `Farbe ${p.color}` : '', p.size ? `Größe ${p.size}` : ''].filter(Boolean).map(esc).join(' · ') || 'nur Bezeichnung'}. Andere Shops zählen nur bei gleicher EAN – oder, wenn ein Shop keine EAN angibt, bei gleicher Marke, Bezeichnung, Farbe und Größe.</p>
     ${p.variantHint ? `<p class="hint muted">${esc(p.variantHint)}</p>` : ''}
     ${p.searchSource ? `<p class="hint muted">Gesucht über ${({ google: 'Google', brave: 'Brave', duckduckgo: 'DuckDuckGo' })[p.searchSource] || esc(p.searchSource)}</p>` : ''}
     ${p.searchError ? `<p class="hint muted">Suche: ${esc(p.searchError)}</p>` : ''}
+    ${p.skipped?.length ? `<details class="excluded"><summary>Gefunden, aber nicht derselbe Artikel (${p.skipped.length})</summary>
+      ${p.skipped.map((x) => `<div class="ex-item"><b>${esc(x.domain)}</b>${esc(x.why)} · <a href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener noreferrer">Seite ansehen ↗</a></div>`).join('')}</details>` : ''}
+    ${p.candidatesFound === 0 ? '<p class="hint muted">Die Suche hat keine weiteren Shop-Seiten geliefert.</p>' : ''}
     ${p.excluded?.length ? `<details class="excluded"><summary>Ausgeschlossene Shops (${p.excluded.length})</summary>
       ${p.excluded.map((e) => `<div class="ex-item"><b>${esc(e.domain)}</b>${e.reasons.map(esc).join(' · ')}</div>`).join('')}</details>` : ''}
     <div class="row gap" style="margin-top:20px">

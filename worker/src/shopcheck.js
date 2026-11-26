@@ -44,14 +44,59 @@ export function parseTrustpilot(html) {
   return { score, count: Number.isFinite(count) ? count : 0, name };
 }
 
-const IMPRESSUM_RE = /impressum|imprint|legal[-_\s]?notice|anbieterkennzeichnung|rechtliche[-_\s]?hinweise/i;
-const RETURNS_RE = /widerruf|rückgabe|rueckgabe|ruecksendung|rücksendung|retoure|returns?|umtausch/i;
-const AGB_RE = /\bagb\b|allgemeine[-_\s]geschäftsbedingungen|terms/i;
+// Link-Texte/-Adressen in absteigender Treffsicherheit
+const IMPRESSUM_RES = [
+  /impressum|imprint|legal[-_\s]?notice|anbieterkennzeichnung|anbieterinformation/i,
+  /rechtliche[-_\s]?(hinweise|angaben)|rechtliches|legal[-_\s]?(info|information)?$|^legal\b|disclaimer/i,
+  /über[-_\s]?uns|ueber[-_\s]?uns|about[-_\s]?us|unternehmen|company|kontakt|contact/i,
+];
+const RETURNS_RES = [
+  /widerruf|rückgabe|rueckgabe|ruecksendung|rücksendung|retoure|returns?|umtausch|refund|cancellation/i,
+  /\bagb\b|allgemeine[-_\s]geschäftsbedingungen|geschaeftsbedingungen|terms|bedingungen/i,
+  /\bfaq\b|häufige[-_\s]fragen|haeufige[-_\s]fragen|hilfe|help|service|kundenservice|support|versand[-_\s]?(und|&|-)?[-_\s]?(rückgabe|rueckgabe|retoure)/i,
+];
+// Übliche Adressen, falls die Links erst per JavaScript geladen werden
+const IMPRESSUM_PATHS = ['/impressum', '/pages/impressum', '/policies/legal-notice', '/de/impressum', '/imprint', '/info/impressum', '/impressum.html', '/legal-notice', '/service/impressum'];
+const RETURNS_PATHS = ['/widerruf', '/policies/refund-policy', '/pages/widerrufsbelehrung', '/widerrufsbelehrung', '/agb', '/pages/agb', '/policies/terms-of-service', '/de/agb', '/faq', '/pages/faq', '/hilfe'];
 
-function pickLink(links, re, domain) {
-  const own = links.filter((l) => { try { return new URL(l.href).hostname.endsWith(domain); } catch { return false; } });
-  return own.find((l) => re.test(l.text)) || own.find((l) => re.test(l.href)) || null;
+function ownLinks(links, domain) {
+  return links.filter((l) => { try { return new URL(l.href).hostname.endsWith(domain); } catch { return false; } });
 }
+
+function pickLinks(links, res, domain, max = 3) {
+  const own = ownLinks(links, domain);
+  const out = [];
+  for (const re of res) {
+    for (const l of own) if ((re.test(l.text) || re.test(new URL(l.href).pathname)) && !out.some((x) => x.href === l.href)) out.push(l);
+    if (out.length >= max) break;
+  }
+  return out.slice(0, max);
+}
+
+/**
+ * Findet eine Seite, deren Text die Bedingung erfüllt: zuerst über Links (Startseite + Produktseite),
+ * dann über übliche Adressen. Gibt { url, text } oder null zurück.
+ */
+async function findPage(fetcher, domain, links, res, paths, accept, maxTries = 4) {
+  const tried = new Set();
+  const candidates = [...pickLinks(links, res, domain).map((l) => l.href), ...paths.map((p) => `https://${domain}${p}`)];
+  for (const href of candidates) {
+    const key = href.replace(/\/$/, '').toLowerCase();
+    if (tried.has(key)) continue;
+    tried.add(key);
+    if (tried.size > maxTries) break;
+    const r = await fetchText(fetcher, href);
+    if (!r.ok) continue;
+    const text = htmlToText(r.text);
+    if (accept(text)) return { url: r.url || href, text };
+  }
+  return null;
+}
+
+// Seite gilt als Impressum, wenn Kontakt + (Firma oder Adresse) vorkommen – oder ein Fernost-Sitz erkennbar ist
+const looksLikeImpressum = (t) => (CONTACT_RE.test(t) && (COMPANY_RE.test(t) || ADDRESS_RE.test(t) || REGISTER_RE.test(t)))
+  || Object.values(REGION_PATTERNS).some((re) => re.test(t) && /impressum|imprint|company|firma|address|adresse/i.test(t));
+const looksLikeReturns = (t) => /widerruf|rückgabe|rueckgabe|rücksend|ruecksend|retoure|right of withdrawal|return/i.test(t);
 
 const COMPANY_RE = /\b(gmbh|ag|ug|e\.\s?k\.|kg|ohg|gbr|e\.\s?v\.|ltd\.?|limited|b\.v\.|s\.r\.l\.|sarl|sas|s\.a\.|a\/s|ab|oy|inc\.?|llc|co\.\s?,?\s?ltd|einzelunternehm\w*|inhaber\w*|geschäftsführer\w*|geschaeftsfuehrer\w*|vertreten durch)(?=\W|$)/i;
 const ADDRESS_RE = /\b(?:\d{4,5}\s+[A-ZÄÖÜ][a-zäöüß]+|D-\d{5}|A-\d{4}|CH-\d{4})|(?:straße|strasse|str\.|weg|platz|allee|gasse|ring)\s*\d+/i;
@@ -121,7 +166,7 @@ export async function rdapAgeDays(fetcher, domain) {
  * Vollständige Prüfung (ohne Cache).
  * @returns {{domain, ok, reasons: string[], notes: string[], trustpilot, impressum, returns, ageDays, checkedAt}}
  */
-export async function checkShop(domain, fetcher, settings, env = {}) {
+export async function checkShop(domain, fetcher, settings, env = {}, extra = {}) {
   const res = { domain, ok: true, reasons: [], notes: [], trustpilot: null, impressum: null, returns: null, ageDays: null, allowlisted: false, checkedAt: Date.now() };
   const fail = (r) => { res.ok = false; res.reasons.push(r); };
 
@@ -164,22 +209,24 @@ export async function checkShop(domain, fetcher, settings, env = {}) {
   }
   if (!res.ok) return res; // weitere Requests sparen
 
-  // 2) Startseite -> Impressum- und Widerrufs-Links
+  // 2) Startseite (+ Produktseite) -> Impressum- und Widerrufs-Links
   const home = await fetchText(fetcher, `https://${domain}/`);
-  if (!home.ok) {
+  if (!home.ok && !extra.pageHtml) {
     if (!res.allowlisted) { res.retryable = true; fail(`Startseite nicht erreichbar (HTTP ${home.status || 'Fehler'})`); }
     else res.notes.push('Impressum nicht abrufbar (Bot-Schutz) – Echtheit über Originaldomain bestätigt');
     return res;
   }
-  const links = extractLinks(home.text, home.url);
+  const links = [
+    ...(home.ok ? extractLinks(home.text, home.url) : []),
+    ...(extra.pageHtml ? extractLinks(extra.pageHtml, extra.pageUrl || `https://${domain}/`) : []),
+  ];
 
-  const impLink = pickLink(links, IMPRESSUM_RE, domain);
-  if (!impLink) {
-    if (!res.allowlisted) fail('Kein Impressum gefunden');
+  const imp = await findPage(fetcher, domain, links, IMPRESSUM_RES, IMPRESSUM_PATHS, looksLikeImpressum);
+  if (!imp) {
+    if (!res.allowlisted) fail('Kein Impressum gefunden (Links, Rechtliches, Kontakt und übliche Adressen geprüft)');
   } else {
-    const imp = await fetchText(fetcher, impLink.href);
-    const text = imp.ok ? htmlToText(imp.text) : '';
-    res.impressum = { url: impLink.href, ...analyseImpressum(text, settings.blockedRegions) };
+    const text = imp.text;
+    res.impressum = { url: imp.url, ...analyseImpressum(text, settings.blockedRegions) };
     if (res.impressum.regions.length) fail(`Firmensitz in Fernost (${res.impressum.regions.join('/')})`);
     else if (!res.allowlisted && !res.impressum.complete) fail('Impressum unvollständig (Firma/Adresse/Kontakt fehlt)');
     else if (res.strict && !res.impressum.register) fail('Ohne Trustpilot-Daten: Impressum ohne Handelsregister/USt-ID');
@@ -193,14 +240,12 @@ export async function checkShop(domain, fetcher, settings, env = {}) {
   }
   if (!res.ok) return res;
 
-  // 3) Rückgabe / Widerruf
-  const retLink = pickLink(links, RETURNS_RE, domain) || pickLink(links, AGB_RE, domain);
-  if (!retLink) {
-    if (!res.allowlisted) fail('Keine Widerrufs-/Rückgabeinformationen gefunden');
+  // 3) Rückgabe / Widerruf (Widerrufsseite, AGB, FAQ/Hilfe/Service)
+  const ret = await findPage(fetcher, domain, links, RETURNS_RES, RETURNS_PATHS, looksLikeReturns);
+  if (!ret) {
+    if (!res.allowlisted) fail('Keine Widerrufs-/Rückgabeinformationen gefunden (auch AGB/FAQ/Hilfe geprüft)');
   } else {
-    const ret = await fetchText(fetcher, retLink.href);
-    const text = ret.ok ? htmlToText(ret.text) : '';
-    res.returns = { url: retLink.href, ...analyseReturns(text, settings.blockedRegions, settings) };
+    res.returns = { url: ret.url, ...analyseReturns(ret.text, settings.blockedRegions, settings) };
     for (const i of res.returns.issues) {
       // Bei bekannten Händlern zählt nur die harte Regel (Rücksendung nach Fernost)
       if (!res.allowlisted || /Rücksendung nach/.test(i)) fail(i);
@@ -268,13 +313,13 @@ export function lookalikeOf(domain, allowlist) {
 }
 
 /** Mit Cache in KV. */
-export async function getShopVerdict(env, domain, fetcher, settings, { force = false } = {}) {
-  const key = `shop2:${domain}`;
+export async function getShopVerdict(env, domain, fetcher, settings, { force = false, pageHtml, pageUrl } = {}) {
+  const key = `shop3:${domain}`;
   if (!force) {
     const cached = await env.DB.get(key, 'json');
     if (cached && Date.now() < (cached.validUntil ?? cached.checkedAt + SHOP_CACHE_DAYS * DAY)) return cached;
   }
-  const verdict = await checkShop(domain, fetcher, settings, env);
+  const verdict = await checkShop(domain, fetcher, settings, env, { pageHtml, pageUrl });
   // Vorübergehende Fehler 6 h merken, Urteile ohne Trustpilot-Daten 7 Tage, sonst 30 Tage.
   const ttl = verdict.retryable ? 6 * 3600 : verdict.strict ? 7 * 86400 : SHOP_CACHE_DAYS * 86400;
   verdict.validUntil = Date.now() + ttl * 1000;

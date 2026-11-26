@@ -148,6 +148,41 @@ export const normGtin = (g) => (g == null ? null : String(g).replace(/\D/g, '').
 export const normMpn = (m) => (m == null ? null : String(m).toUpperCase().replace(/[^A-Z0-9]/g, '') || null);
 const gtinOf = (n) => normGtin(n?.gtin13 ?? n?.gtin ?? n?.gtin14 ?? n?.gtin12 ?? n?.gtin8 ?? n?.ean ?? n?.isbn);
 
+// Farben (deutsch/englisch) auf eine gemeinsame Form bringen
+const COLOR_MAP = {
+  schwarz: 'schwarz', black: 'schwarz', weiss: 'weiss', 'weiß': 'weiss', white: 'weiss', grau: 'grau', grey: 'grau', gray: 'grau',
+  anthrazit: 'anthrazit', anthracite: 'anthrazit', blau: 'blau', blue: 'blau', navy: 'navy', marine: 'navy', dunkelblau: 'navy',
+  hellblau: 'hellblau', 'light blue': 'hellblau', rot: 'rot', red: 'rot', gruen: 'gruen', 'grün': 'gruen', green: 'gruen',
+  oliv: 'oliv', olive: 'oliv', gelb: 'gelb', yellow: 'gelb', orange: 'orange', rosa: 'rosa', pink: 'pink', lila: 'lila',
+  violett: 'lila', purple: 'lila', braun: 'braun', brown: 'braun', beige: 'beige', natur: 'natur', natural: 'natur',
+  silber: 'silber', silver: 'silber', gold: 'gold', bordeaux: 'bordeaux', burgundy: 'bordeaux', creme: 'creme', cream: 'creme',
+  mint: 'mint', petrol: 'petrol', khaki: 'khaki', ecru: 'ecru', midnight: 'navy', graphit: 'graphit', graphite: 'graphit',
+};
+const COLOR_WORDS = Object.keys(COLOR_MAP).sort((a, b) => b.length - a.length);
+export function normColor(c) {
+  if (!c) return null;
+  const t = String(c).toLowerCase().normalize('NFC');
+  for (const w of COLOR_WORDS) if (new RegExp(`(^|[^a-zäöüß])${w}([^a-zäöüß]|$)`).test(t)) return COLOR_MAP[w];
+  return t.trim() || null;
+}
+export function colorsInText(t) {
+  const out = new Set();
+  const s = String(t || '').toLowerCase();
+  for (const w of COLOR_WORDS) if (new RegExp(`(^|[^a-zäöüß])${w}([^a-zäöüß]|$)`).test(s)) out.add(COLOR_MAP[w]);
+  return [...out];
+}
+export const normSize = (z) => (z == null ? null : String(z).toUpperCase().replace(/\s+/g, '').replace(/^GR(ÖSSE|OESSE|\.)?/, '') || null);
+
+function propOf(n, names) {
+  for (const k of names) if (n?.[k]) return typeof n[k] === 'object' ? n[k].name || n[k].value : n[k];
+  for (const ap of [].concat(n?.additionalProperty || [])) {
+    if (names.some((k) => new RegExp(k, 'i').test(String(ap?.name || '')))) return ap.value;
+  }
+  return null;
+}
+const colorOfNode = (n) => normColor(propOf(n, ['color', 'colour', 'farbe']));
+const sizeOfNode = (n) => normSize(propOf(n, ['size', 'groesse', 'größe', 'grösse']));
+
 const LISTING_TYPES = ['ItemList', 'CollectionPage', 'SearchResultsPage', 'OfferCatalog'];
 const LISTING_URL = /(\/search|\/suche|\/s\?|[?&](q|query|search|searchterm|keyword|k)=|\/kategorie|\/category|\/categories|\/c\/|\/collections\/[^/]+\/?(\?|$)|\/marke\/|\/brand\/|\/angebote\/?(\?|$)|\/sale\/?(\?|$))/i;
 
@@ -179,7 +214,10 @@ export function extractOffer(html, url, settings = {}, want = {}) {
   const entries = [];
   for (const p of products) {
     for (const o of offerFromLd(p.offers)) {
-      entries.push({ product: p, ...o, gtin: gtinOf(o.raw) || gtinOf(p), mpn: normMpn(o.raw?.mpn || p.mpn), offerUrl: o.raw?.url || p.url || null });
+      entries.push({
+        product: p, ...o, gtin: gtinOf(o.raw) || gtinOf(p), mpn: normMpn(o.raw?.mpn || p.mpn), offerUrl: o.raw?.url || p.url || null,
+        color: colorOfNode(o.raw?.itemOffered) || colorOfNode(p), size: sizeOfNode(o.raw?.itemOffered) || sizeOfNode(p),
+      });
     }
   }
   const allGtins = [...new Set(entries.map((e) => e.gtin).concat(products.map(gtinOf)).filter(Boolean))];
@@ -190,7 +228,13 @@ export function extractOffer(html, url, settings = {}, want = {}) {
   const wantG = wantGs.size ? [...wantGs][0] : null, wantM = normMpn(want.mpn);
   if (wantG) chosen = entries.filter((e) => wantGs.has(e.gtin)).reduce((a, b) => (!a || b.price < a.price ? b : a), null);
   if (!chosen && wantM && !wantG) chosen = entries.find((e) => e.mpn === wantM) || null;
-  if (!chosen && !wantG && !wantM) {
+  // Ohne passende EAN: Variante über Farbe/Größe wählen
+  const wantC = normColor(want.color), wantS = normSize(want.size);
+  if (!chosen && (wantC || wantS) && entries.some((e) => e.color || e.size)) {
+    chosen = entries.find((e) => (!wantC || e.color === wantC) && (!wantS || e.size === wantS)) || null;
+  }
+  const noIdMatch = !chosen && (wantG || wantM);
+  if (!chosen && (!wantG && !wantM || noIdMatch)) {
     // Variante über die URL (z. B. ?variant=123) oder einziges Produkt
     let pageUrl = '';
     try { pageUrl = new URL(url).search; } catch {}
@@ -221,6 +265,10 @@ export function extractOffer(html, url, settings = {}, want = {}) {
         || html.match(/content\s*=\s*["']([^"']+)["'][^>]*itemprop\s*=\s*["']price["']/i);
       price = parsePrice(ip?.[1]);
     }
+  }
+  // Kein strukturierter Treffer, aber Seite hat Preis über Meta-Angaben
+  if (!chosen && price == null && products.length === 0) {
+    price = parsePrice(meta(html, ['product:price:amount', 'og:price:amount', 'price']));
   }
   const chosenGtin = chosen?.gtin || (products.length === 1 ? gtinOf(products[0]) : null);
   const chosenMpn = chosen?.mpn || (products.length === 1 ? normMpn(products[0].mpn) : null);
@@ -274,6 +322,10 @@ export function extractOffer(html, url, settings = {}, want = {}) {
     image,
     gtin: chosenGtin,
     gtins: allGtins,
+    color: chosen?.color || colorOfNode(product) || null,
+    colors: [...new Set(entries.map((e) => e.color).filter(Boolean))],
+    size: chosen?.size || sizeOfNode(product) || null,
+    sizes: [...new Set(entries.map((e) => e.size).filter(Boolean))],
     mpn: chosenMpn,
     mpns: allMpns,
     isListing: listing,

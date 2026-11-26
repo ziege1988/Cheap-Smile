@@ -93,8 +93,27 @@ test('Impressum in China -> ausgeschlossen', async () => {
 });
 
 test('Kein Impressum -> ausgeschlossen', async () => {
-  const w = goodShop('anonym.de', { 'https://anonym.de/': '<html><a href="/agb">AGB</a></html>' });
+  const w = goodShop('anonym.de', { 'https://anonym.de/': '<html><a href="/agb">AGB</a></html>', 'https://anonym.de/impressum': { status: 404 } });
   assert.match((await checkShop('anonym.de', createFetcher(fakeWeb(w)), S)).reasons.join(), /Kein Impressum/);
+});
+
+test('Impressum ohne Link (per JavaScript geladen) wird über übliche Adressen gefunden', async () => {
+  const w = goodShop('js-shop.de', { 'https://js-shop.de/': '<html><div id="app"></div></html>', 'https://js-shop.de/impressum': { status: 404 },
+    'https://js-shop.de/pages/impressum': impressumDE, 'https://js-shop.de/widerruf': { status: 404 }, 'https://js-shop.de/policies/refund-policy': widerrufOK });
+  const v = await checkShop('js-shop.de', createFetcher(fakeWeb(w)), S);
+  assert.equal(v.ok, true, v.reasons.join());
+  assert.equal(v.impressum.url, 'https://js-shop.de/pages/impressum');
+  assert.equal(v.returns.url, 'https://js-shop.de/policies/refund-policy');
+});
+
+test('Impressum unter „Rechtliches“, Rückgabe in den FAQ, Link nur auf der Produktseite', async () => {
+  const w = goodShop('faq-shop.de', { 'https://faq-shop.de/': '<html></html>', 'https://faq-shop.de/impressum': { status: 404 }, 'https://faq-shop.de/widerruf': { status: 404 },
+    'https://faq-shop.de/rechtliches': impressumDE, 'https://faq-shop.de/hilfe/faq': widerrufOK });
+  const page = '<html><footer><a href="/rechtliches">Rechtliches</a> <a href="/hilfe/faq">FAQ</a></footer></html>';
+  const v = await checkShop('faq-shop.de', createFetcher(fakeWeb(w)), S, {}, { pageHtml: page, pageUrl: 'https://faq-shop.de/p/1' });
+  assert.equal(v.ok, true, v.reasons.join());
+  assert.equal(v.impressum.url, 'https://faq-shop.de/rechtliches');
+  assert.equal(v.returns.url, 'https://faq-shop.de/hilfe/faq');
 });
 
 test('Junge Domain -> ausgeschlossen', async () => {

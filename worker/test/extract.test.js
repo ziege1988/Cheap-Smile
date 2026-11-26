@@ -86,5 +86,11 @@ test('Varianten: genau die gesuchte EAN (Größe/Farbe) wird gewählt', () => {
   const viaUrl = extractOffer(group, 'https://dilling.de/p/mu?variant=11');
   assert.equal(viaUrl.gtin, '5712345000011');
   assert.equal(extractOffer(group, 'https://dilling.de/p/mu').ambiguousVariant, true);
-  assert.equal(extractOffer(group, 'https://dilling.de/p/mu', {}, { gtin: '9999999999999' }).price, null, 'gesuchte Variante fehlt');
+  assert.notEqual(extractOffer(group, 'https://dilling.de/p/mu', {}, { gtin: '9999999999999' }).gtin, '9999999999999', 'gesuchte Variante fehlt -> andere EAN, wird beim Abgleich verworfen');
+  const byColor = `<script type="application/ld+json">${JSON.stringify({ '@type': 'ProductGroup', name: 'Shirt', productGroupID: 'S1', hasVariant: [
+    { '@type': 'Product', name: 'Shirt', color: 'Black', size: 'M', offers: { '@type': 'Offer', price: '20', priceCurrency: 'EUR' } },
+    { '@type': 'Product', name: 'Shirt', color: 'Navy', size: 'M', offers: { '@type': 'Offer', price: '22', priceCurrency: 'EUR' } },
+  ] })}</script>`;
+  const c = extractOffer(byColor, 'https://x.de/p/shirt', {}, { color: 'marine', size: 'm' });
+  assert.equal(c.price, 22, 'Variante über Farbe + Größe gewählt (Navy = Marine)');
 });
