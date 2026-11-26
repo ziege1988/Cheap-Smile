@@ -8,7 +8,7 @@ import { checkProduct, toClient, applyVariantChoice } from './products.js';
 import { bestOffer, effectiveTotal } from './deal.js';
 import { sendPush, b64urlEncode } from './push.js';
 import { quotaStatus } from './search.js';
-import { asinOf, resolveAmazonShortLink } from './amazon.js';
+import { asinOf, resolveAmazonShortLink, isAmazonShortLink } from './amazon.js';
 import { nameFromUrl as slugName } from './util.js';
 
 const json = (data, status = 200, env) => new Response(JSON.stringify(data), {
@@ -107,7 +107,7 @@ async function handleApi(req, env, ctx, url) {
       const link = q.match(/https?:\/\/[^\s"'<>]+/i)?.[0];
       if (link) q = link.replace(/[).,;!]+$/, '');
     }
-    if (/^https?:\/\/(amzn\.(eu|to)|a\.co)\//i.test(q)) q = await resolveAmazonShortLink(q);
+    if (isAmazonShortLink(q)) q = await resolveAmazonShortLink(q);
     if (q.length < 3) return json({ error: 'Bitte Produktname oder Link angeben.' }, 400, env);
     const wish = parseWish(body.wishPrice);
     if (wish === undefined) return json({ error: 'Ungültiger Wunschpreis.' }, 400, env);
@@ -115,11 +115,11 @@ async function handleApi(req, env, ctx, url) {
     const asin = isUrl ? asinOf(q) : null;
     const product = {
       id: uid(), createdAt: Date.now(),
-      name: isUrl ? (body.name?.trim() || slugName(q) || (asin ? 'Amazon-Artikel' : domainOf(q)) || q) : q,
+      name: isUrl ? (body.name?.trim() || slugName(q) || (asin || isAmazonShortLink(q) ? 'Amazon-Artikel' : domainOf(q)) || q) : q,
       nameFromUrl: isUrl && !body.name,
       sourceUrl: isUrl ? q : null,
       asin, // Amazon-Link: Artikel wird über die ASIN abgefragt (Amazon blockiert direkte Abrufe)
-      wishPrice: wish, allowUsed: !!body.allowUsed, includeAmazon: asin ? true : body.includeAmazon !== false,
+      wishPrice: wish, allowUsed: !!body.allowUsed, includeAmazon: asin || isAmazonShortLink(q) ? true : body.includeAmazon !== false,
       color: body.color ? String(body.color).trim().slice(0, 40) : null,
       size: body.size ? String(body.size).trim().slice(0, 20) : null,
       userVariant: !!(body.color || body.size),

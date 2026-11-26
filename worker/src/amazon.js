@@ -98,19 +98,46 @@ export function asinOf(href) {
 }
 export const isAmazonUrl = (href) => { try { return /(^|\.)amazon\.[a-z.]+$|^amzn\./i.test(new URL(href).hostname); } catch { return false; } };
 
-/** Amazon-Kurzlinks (amzn.eu/d/…, amzn.to/…) aus der Amazon-App auflösen – ohne die blockierte Zielseite zu laden. */
+export const isAmazonShortLink = (href) => /^https?:\/\/(www\.)?(amzn\.(eu|to|com)|a\.co)\//i.test(String(href || ''));
+
+/**
+ * Amazon-Kurzlinks (amzn.eu/d/…, amzn.to/…) aus der Amazon-App zur ASIN auflösen.
+ * Drei Wege, weil Amazon Server-Anfragen unterschiedlich beantwortet:
+ *  1. Weiterleitungen einzeln verfolgen (Location-Header)
+ *  2. Weiterleitungen automatisch folgen und die End-Adresse lesen
+ *  3. ASIN im Seiteninhalt suchen (auch Amazons Sperrseite enthält oft den Ziel-Pfad)
+ */
 export async function resolveAmazonShortLink(href, fetchImpl = fetch) {
+  if (!isAmazonShortLink(href)) return href;
+  const UA = { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1', 'Accept-Language': 'de-DE,de;q=0.9' };
+  // 1) manuell
   try {
-    const u = new URL(href);
-    if (!/^(amzn\.(eu|to)|a\.co)$/i.test(u.hostname)) return href;
     let cur = href;
-    for (let i = 0; i < 4; i++) {
-      const res = await fetchImpl(cur, { method: 'GET', redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0' } });
+    for (let i = 0; i < 5; i++) {
+      const res = await fetchImpl(cur, { method: 'GET', redirect: 'manual', headers: UA });
       const loc = res.headers.get('location');
-      if (!loc) break;
+      if (!loc) {
+        const body = await res.text().catch(() => '');
+        const a = asinInText(body);
+        if (a) return `https://www.amazon.de/dp/${a}`;
+        break;
+      }
       cur = new URL(loc, cur).toString();
       if (asinOf(cur)) return cur;
     }
-    return cur;
-  } catch { return href; }
+  } catch {}
+  // 2) + 3) automatisch folgen
+  try {
+    const res = await fetchImpl(href, { method: 'GET', redirect: 'follow', headers: UA });
+    if (asinOf(res.url)) return res.url;
+    const a = asinInText(await res.text().catch(() => ''));
+    if (a) return `https://www.amazon.de/dp/${a}`;
+  } catch {}
+  return href;
+}
+
+/** ASIN in HTML/Text finden (z. B. „/dp/B09Y2MYL5C“ oder data-asin="…"). */
+export function asinInText(t) {
+  const s = String(t || '');
+  return (s.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?=[/?"'&#\s]|$)/) || s.match(/data-asin=["']([A-Z0-9]{10})["']/) || s.match(/["']asin["']\s*:\s*["']([A-Z0-9]{10})["']/i))?.[1] || null;
 }

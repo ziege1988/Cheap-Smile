@@ -152,7 +152,7 @@ function tileHtml(p) {
              <div class="sub">${best.oldPrice ? `<span class="old">${eur(best.oldPrice)}</span>` : ''}${esc(shippingText(best))}</div>
              <div class="sub">bei <strong>${esc(best.shopName || best.domain)}</strong></div>`
           : `<div class="price ${p.pending ? 'skeleton' : ''}">${p.pending ? '000,00 €' : '–'}</div>
-             <div class="sub">${p.pending ? 'Suche läuft' : esc(p.lastError || p.searchError || 'Noch kein passender Shop')}</div>`}
+             <div class="sub">${p.pending ? 'Suche läuft' : esc(p.amazonError || p.lastError || p.searchError || 'Noch kein passender Shop')}</div>`}
       </div>
     </div>
     <div class="badges">${badgesFor(p)}</div>

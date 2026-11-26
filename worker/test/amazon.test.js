@@ -152,3 +152,31 @@ test('Geteilter Text mit Link wird als Link erkannt', async () => {
   await Promise.all(waits);
   assert.equal(p.asin, 'B09Y2MYL5C');
 });
+
+test('Kurzlink-Auflösung: Weiterleitung, End-Adresse oder ASIN im Seiteninhalt', async () => {
+  const { resolveAmazonShortLink, asinInText } = await import('../src/amazon.js');
+  // Amazon antwortet ohne Location, aber die Sperrseite enthält den Ziel-Pfad
+  const viaBody = async () => new Response('<form><input type="hidden" name="amzn-r" value="/dp/B09Y2MYL5C?ref=x"></form>', { status: 200 });
+  assert.equal(await resolveAmazonShortLink('https://amzn.eu/d/xyz', viaBody), 'https://www.amazon.de/dp/B09Y2MYL5C');
+  // Weiterleitung nur beim automatischen Folgen sichtbar
+  const viaFollow = async (u, init) => (init.redirect === 'manual'
+    ? new Response('', { status: 200 })
+    : Object.defineProperty(new Response('captcha'), 'url', { value: 'https://www.amazon.de/-/de/dp/B09Y2MYL5C?th=1' }));
+  assert.equal(await resolveAmazonShortLink('https://amzn.eu/d/xyz', viaFollow), 'https://www.amazon.de/-/de/dp/B09Y2MYL5C?th=1');
+  assert.equal(asinInText('<div data-asin="B0ABCDEF12">'), 'B0ABCDEF12');
+});
+
+test('Bestehendes Produkt mit amzn.eu-Kurzlink wird beim Prüfen aufgelöst und über Amazon abgefragt', async () => {
+  const { env, call } = await setup(amazonJson([{ asin: 'B09Y2MYL5C', title: 'Dilling Halswärmer aus Merinowolle, Grau', extracted_price: 34.95, rating: 4.7, reviews: 210 }]));
+  const base = globalThis.fetch;
+  globalThis.fetch = Object.assign(async (url, init) => (String(url).startsWith('https://amzn.eu/')
+    ? new Response('', { status: 301, headers: { location: 'https://www.amazon.de/dp/B09Y2MYL5C' } })
+    : base(url, init)), { calls: base.calls });
+  const old = { id: 'kurz1', createdAt: 1, name: 'amzn.eu', nameFromUrl: true, sourceUrl: 'https://amzn.eu/d/abc123', includeAmazon: true, offers: [], excluded: [], history: [], notify: {} };
+  await env.DB.put('product:kurz1', JSON.stringify(old));
+  await env.DB.put('index', JSON.stringify(['kurz1']));
+  const r = await call('POST', '/api/products/kurz1/refresh');
+  assert.equal(r.product.asin, 'B09Y2MYL5C');
+  assert.equal(r.product.name, 'Dilling Halswärmer aus Merinowolle');
+  assert.equal(r.product.best?.domain, 'amazon.de');
+});

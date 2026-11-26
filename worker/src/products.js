@@ -6,7 +6,7 @@ import { fetchText, domainOf, matchScore, nameFromUrl, BudgetExceeded, HOUR, DAY
 import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText } from './extract.js';
 import { getShopVerdict } from './shopcheck.js';
 import { searchCandidates } from './search.js';
-import { amazonSearch, AMAZON_DOMAIN, asinOf } from './amazon.js';
+import { amazonSearch, AMAZON_DOMAIN, asinOf, isAmazonShortLink, resolveAmazonShortLink } from './amazon.js';
 import { applyOfferRules, recordHistory, evaluateAlerts, bestOffer, effectiveTotal } from './deal.js';
 
 
@@ -234,6 +234,7 @@ async function refreshOffer(env, product, fetcher, settings, o) {
 }
 
 const AMAZON_INTERVAL_HOURS = 24;
+const isShortName = (n) => /^(amzn\.(eu|to|com)|a\.co|amazon\.[a-z.]+)$/i.test(String(n || ''));
 
 /** Amazon-Angebot über SerpApi suchen, mit denselben strengen Regeln abgleichen und eintragen. */
 async function checkAmazon(env, product, fetcher, settings, { priority }) {
@@ -266,7 +267,7 @@ async function checkAmazon(env, product, fetcher, settings, { priority }) {
     return;
   }
   // Amazon-Link: Name, Bild und Marke vom Amazon-Ergebnis übernehmen
-  if (product.asin && (product.nameFromUrl || product.nameFromSlug || /^Amazon-Artikel$/.test(product.name)) && hit.title) {
+  if (product.asin && (product.nameFromUrl || product.nameFromSlug || /^Amazon-Artikel$/.test(product.name) || isShortName(product.name)) && hit.title) {
     product.name = hit.title.split(/\s[-–|]\s|,\s/)[0].slice(0, 120) || hit.title.slice(0, 120);
     product.nameFromUrl = false;
     product.nameFromSlug = false;
@@ -305,6 +306,14 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
   const t = Date.now();
   product.lastError = null;
   product.partial = false;
+  // Amazon-Kurzlink, der beim Anlegen nicht aufgelöst werden konnte: erneut versuchen
+  if (!product.asin && isAmazonShortLink(product.sourceUrl)) {
+    try {
+      const resolved = await resolveAmazonShortLink(product.sourceUrl, fetcher);
+      if (asinOf(resolved)) product.sourceUrl = resolved;
+      else product.amazonError = 'Amazon-Kurzlink ließ sich nicht auflösen – bitte den vollständigen Link (amazon.de/…/dp/…) einfügen';
+    } catch { /* nächster Lauf versucht es erneut */ }
+  }
   // Ältere Produkte mit Amazon-Link auf die ASIN-Abfrage umstellen
   if (!product.asin && product.sourceUrl && asinOf(product.sourceUrl)) {
     product.asin = asinOf(product.sourceUrl);
@@ -312,7 +321,9 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
     product.lastAmazonAt = null;
     product.excluded = product.excluded.filter((e) => e.domain !== AMAZON_DOMAIN);
     const slug = nameFromUrl(product.sourceUrl);
-    if (product.nameFromUrl && slug) { product.name = slug; product.nameFromUrl = false; product.nameFromSlug = true; }
+    if (slug && (product.nameFromUrl || isShortName(product.name))) { product.name = slug; product.nameFromUrl = false; product.nameFromSlug = true; }
+    else if (isShortName(product.name)) product.name = 'Amazon-Artikel';
+    product.amazonError = null;
   }
   try {
     // Eigener Link (beim Anlegen angegeben)
@@ -322,7 +333,7 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
     const srcExcluded = product.excluded.find((e) => e.domain === srcDomain);
     const srcDue = !srcExcluded || force || isTemporary(srcExcluded) || t - srcExcluded.at > DAY;
     // Amazon-Links werden nicht geladen (Amazon blockiert) – der Artikel kommt über die ASIN-Abfrage
-    if (product.sourceUrl && !product.asin && !product.offers.some((o) => o.manual) && srcDue) {
+    if (product.sourceUrl && !product.asin && !isAmazonShortLink(product.sourceUrl) && !product.offers.some((o) => o.manual) && srcDue) {
       await considerCandidate(env, product, fetcher, settings, product.sourceUrl, { manual: true });
     }
 
