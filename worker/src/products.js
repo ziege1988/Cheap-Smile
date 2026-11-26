@@ -3,7 +3,7 @@
 
 import { MAX_CANDIDATES, SEARCH_INTERVAL_HOURS, PRICE_INTERVAL_HOURS } from './config.js';
 import { fetchText, domainOf, matchScore, nameFromUrl, BudgetExceeded, HOUR, DAY } from './util.js';
-import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText } from './extract.js';
+import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText, shopifyJsonUrl, parseShopifyJson } from './extract.js';
 import { getShopVerdict } from './shopcheck.js';
 import { searchCandidates } from './search.js';
 import { amazonSearch, AMAZON_DOMAIN, asinOf, isAmazonShortLink, resolveAmazonShortLink } from './amazon.js';
@@ -123,14 +123,21 @@ export function applyVariantChoice(product, color, size) {
   }
 }
 
-/** Lädt eine Produktseite und baut daraus ein Angebot (ohne Shop-Prüfung). */
-async function loadOffer(fetcher, url, settings, want = {}) {
+/** Lädt eine Produktseite und baut daraus ein Angebot (ohne Shop-Prüfung).
+ *  deep=true (eigener Link): bei Shopify zusätzlich die Produktdaten mit allen Varianten laden. */
+async function loadOffer(fetcher, url, settings, want = {}, { deep = false } = {}) {
   const page = await fetchText(fetcher, url);
   if (!page.ok) {
     const blocked = [401, 403, 429, 503].includes(page.status);
     return { error: blocked ? `Shop blockiert automatische Abrufe (HTTP ${page.status})` : `Seite nicht erreichbar (HTTP ${page.status || 'Fehler'})` };
   }
-  const ex = extractOffer(page.text, page.url || url, settings, { ...want, hintUrl: url });
+  let extra = {};
+  const sj = deep && page.ok ? shopifyJsonUrl(page.text, page.url || url) : null;
+  if (sj) {
+    const r = await fetchText(fetcher, sj, { maxBytes: 600_000, init: { headers: { Accept: 'application/json' } } });
+    if (r.ok) { try { extra = { variants: parseShopifyJson(JSON.parse(r.text), page.url || url) }; } catch {} }
+  }
+  const ex = extractOffer(page.text, page.url || url, settings, { ...want, hintUrl: url }, extra);
   if (ex.isListing) return { error: 'Listen-/Kategorieseite statt Produktseite', ex, html: page.text };
   if (ex.price == null) return { error: 'Kein Preis erkennbar (Variante fehlt oder Seite ohne Produktdaten)', ex, html: page.text };
   return { ex, html: page.text };
@@ -139,7 +146,7 @@ async function loadOffer(fetcher, url, settings, want = {}) {
 async function considerCandidate(env, product, fetcher, settings, url, { manual = false } = {}) {
   const domain = domainOf(url);
   if (!domain) return;
-  const { ex, error, html } = await loadOffer(fetcher, url, settings, identityOf(product));
+  const { ex, error, html } = await loadOffer(fetcher, url, settings, identityOf(product), { deep: manual });
   const skip = (why) => {
     if (manual) return;
     product.skipped = (product.skipped || []).filter((x) => x.domain !== domain);
@@ -160,7 +167,7 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
   }
   if (manual) {
     // Varianten-Auswahl (Farbe/Größe) für die App merken
-    if (ex.variants?.length) product.variants = ex.variants;
+    rememberOptions(product, ex);
     // Eigener Link legt fest, welcher Artikel (inkl. Variante) gesucht ist
     if (!product.gtin && !product.gtins?.length && !product.mpn) {
       product.mpn = ex.mpn || null;
@@ -208,8 +215,16 @@ async function considerCandidate(env, product, fetcher, settings, url, { manual 
   product.offers.push(offer);
 }
 
+/** Auswahlmöglichkeiten (Farbe/Größe) vom eigenen Shop-Link merken. */
+function rememberOptions(product, ex) {
+  if (ex.variants?.length) product.variants = ex.variants;
+  const ol = ex.optionLists || {};
+  if (ol.colors?.length || ol.sizes?.length) product.optionLists = { colors: ol.colors || [], sizes: ol.sizes || [] };
+}
+
 async function refreshOffer(env, product, fetcher, settings, o) {
-  const { ex, error } = await loadOffer(fetcher, o.url, settings, identityOf(product));
+  const { ex, error } = await loadOffer(fetcher, o.url, settings, identityOf(product), { deep: !!o.manual });
+  if (o.manual && ex) rememberOptions(product, ex);
   o.checkedAt = Date.now();
   if (error) {
     // Liste statt Produktseite / falsche Variante: Angebot sofort entfernen
@@ -234,6 +249,12 @@ async function refreshOffer(env, product, fetcher, settings, o) {
 }
 
 const AMAZON_INTERVAL_HOURS = 24;
+const SIZE_ORDER = ['XXXS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', 'XXXL', '3XL', '4XL', '5XL'];
+/** Größen sinnvoll sortieren: XS < S < M … bzw. numerisch. */
+function sortSizes(list) {
+  const rank = (z) => { const u = String(z).toUpperCase(); const i = SIZE_ORDER.indexOf(u); return i >= 0 ? i : 100 + (parseFloat(u.replace(',', '.')) || 999); };
+  return [...list].sort((a, b) => rank(a) - rank(b));
+}
 const isShortName = (n) => /^(amzn\.(eu|to|com)|a\.co|amazon\.[a-z.]+)$/i.test(String(n || ''));
 
 /** Amazon-Angebot über SerpApi suchen, mit denselben strengen Regeln abgleichen und eintragen. */
@@ -416,8 +437,10 @@ export function toClient(p) {
     color: p.color || null, size: p.size || null, skipped: p.skipped || [], candidatesFound: p.candidatesFound ?? null,
     userVariant: !!p.userVariant,
     variantOptions: {
-      colors: [...new Set((p.variants || []).map((v) => v.color).filter(Boolean))],
-      sizes: [...new Set((p.variants || []).map((v) => v.size).filter(Boolean))],
+      colors: [...new Set([...(p.variants || []).map((v) => v.color), ...(p.optionLists?.colors || [])].filter(Boolean))],
+      sizes: sortSizes([...new Set([...(p.variants || []).map((v) => v.size), ...(p.optionLists?.sizes || [])].filter(Boolean))]),
+      // welche Kombinationen es gibt (für die App: nicht erhältliche ausgrauen)
+      combos: (p.variants || []).filter((v) => v.color || v.size).map((v) => ({ c: v.color || null, s: v.size || null, ok: v.available !== false, price: v.price ?? null })),
     },
     includeAmazon: !!p.includeAmazon, amazonError: p.amazonError || null, lastAmazonAt: p.lastAmazonAt || null,
     asin: p.asin || null, queued: (p.queue || []).length, nameFromSlug: !!p.nameFromSlug,

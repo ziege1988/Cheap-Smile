@@ -231,7 +231,8 @@ test('Farbe/Größe als Kriterium: Auswahl aus dem Shop-Link, danach nur passend
   const p = await call('POST', '/api/products', { query: 'https://dilling.de/p/ms', includeAmazon: false });
   await Promise.all(waits); waits.length = 0;
   let d = await call('GET', `/api/products/${p.id}`);
-  assert.deepEqual(d.variantOptions, { colors: ['schwarz', 'navy'], sizes: ['M', 'L'] });
+  assert.deepEqual([d.variantOptions.colors, d.variantOptions.sizes], [['schwarz', 'navy'], ['M', 'L']]);
+  assert.equal(d.variantOptions.combos.length, 3);
   assert.equal(d.offers.length, 3, 'ohne Auswahl: alle Varianten zählen');
 
   d = await call('PATCH', `/api/products/${p.id}`, { color: 'navy', size: 'M' });

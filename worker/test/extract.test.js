@@ -122,3 +122,39 @@ test('Variante aus dem Link: Adresse, SKU/EAN/ID im Pfad, Parameter, #Fragment, 
   assert.deepEqual([sx.price, sx.size, sx.ambiguousVariant], [21, 'M', false], 'Shopify-Variante trotz Tracking-Parametern');
   assert.equal(variantFromUrl([], 'https://x.de'), null);
 });
+
+test('Varianten aus WooCommerce, Shopify (meta + .json) und Auswahlfeldern', async () => {
+  const { parseShopifyJson, shopifyJsonUrl, selectOptions } = await import('../src/extract.js');
+  // WooCommerce
+  const woo = `<script type="application/ld+json">${JSON.stringify({ '@type': 'Product', name: 'Wollmütze', offers: { '@type': 'Offer', price: '19.90', priceCurrency: 'EUR' } })}</script>
+    <form class="variations_form" data-product_variations="${JSON.stringify([
+      { attributes: { attribute_pa_farbe: 'schwarz', attribute_pa_groesse: 'm' }, display_price: 19.9, sku: 'WM-S-M', variation_id: 11, is_in_stock: true },
+      { attributes: { attribute_pa_farbe: 'grau', attribute_pa_groesse: 'm' }, display_price: 21.9, sku: 'WM-G-M', variation_id: 12, is_in_stock: false },
+    ]).replace(/"/g, '&quot;')}"></form>`;
+  const w = extractOffer(woo, 'https://laden.de/produkt/wollmuetze/');
+  assert.deepEqual(w.variants.map((v) => [v.color, v.size, v.price, v.available]), [['schwarz', 'M', 19.9, true], ['grau', 'M', 21.9, false]]);
+  const wg = extractOffer(woo, 'https://laden.de/produkt/wollmuetze/', {}, { color: 'grau', size: 'm' });
+  assert.equal(wg.price, 21.9);
+
+  // Shopify meta (auf jeder Produktseite)
+  const meta = `<html><script>var meta = {"product":{"id":1,"variants":[{"id":501,"price":3995,"name":"Halswärmer - Grau \\/ S","public_title":"Grau \\/ S","sku":"HW-G-S"},{"id":502,"price":3995,"name":"Halswärmer - Schwarz \\/ M","public_title":"Schwarz \\/ M","sku":"HW-B-M"}]},"page":{}};
+for (var attr in meta) {}</script><link href="https://cdn.shopify.com/x.css"></html>`;
+  const sm = extractOffer(meta, 'https://dilling.de/products/halswaermer');
+  assert.deepEqual(sm.variants.map((v) => [v.color, v.size, v.price]), [['grau', 'S', 39.95], ['schwarz', 'M', 39.95]]);
+  const sv = extractOffer(meta, 'https://dilling.de/products/halswaermer?variant=502', {}, { hintUrl: 'https://dilling.de/products/halswaermer?variant=502' });
+  assert.deepEqual([sv.color, sv.size, sv.ambiguousVariant], ['schwarz', 'M', false], 'Variante aus ?variant=… erkannt');
+  assert.equal(shopifyJsonUrl(meta, 'https://dilling.de/products/halswaermer?variant=502'), 'https://dilling.de/products/halswaermer.json');
+
+  // Shopify .json (mit EAN je Variante und echten Optionsnamen)
+  const sj = parseShopifyJson({ product: { handle: 'halswaermer', options: [{ name: 'Größe' }, { name: 'Farbe' }], variants: [
+    { id: 501, option1: 'S', option2: 'Grau', price: '39.95', barcode: '5712345000011', available: true },
+    { id: 502, option1: 'M', option2: 'Schwarz', price: '39.95', barcode: '5712345000028', available: false },
+  ] } }, 'https://dilling.de/products/halswaermer');
+  assert.deepEqual(sj.map((v) => [v.color, v.size, v.gtin, v.available]), [['Grau', 'S', '5712345000011', true], ['Schwarz', 'M', '5712345000028', false]]);
+  const withJson = extractOffer(meta, 'https://dilling.de/products/halswaermer', {}, { gtin: '5712345000028' }, { variants: sj });
+  assert.deepEqual([withJson.gtin, withJson.url], ['5712345000028', 'https://dilling.de/products/halswaermer?variant=502']);
+
+  // Allgemeine Auswahlfelder
+  const sel = selectOptions('<select name="farbe"><option value="">Bitte wählen</option><option value="rot">Rot</option><option value="blau">Blau</option></select><select id="size-picker"><option value="40">40</option><option value="42">42 - ausverkauft</option></select>');
+  assert.deepEqual(sel, { colors: ['Rot', 'Blau'], sizes: ['40', '42'] });
+});

@@ -64,7 +64,7 @@ nach `main` mergen. KV-Speicher und Web-Push-Schlüssel legt das System selbst a
 
 ## Entwicklung
 ```bash
-cd worker && npm test     # 60 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
+cd worker && npm test     # 61 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
 npx wrangler dev          # API lokal
 ```
 

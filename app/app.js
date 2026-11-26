@@ -249,21 +249,59 @@ function offerHtml(o, p, isBest) {
 
 /** Auswahl von Farbe/Größe: Listen aus dem Shop-Link, sonst freie Eingabe */
 function variantPicker(p) {
-  const o = p.variantOptions || { colors: [], sizes: [] };
+  const o = p.variantOptions || { colors: [], sizes: [], combos: [] };
+  const same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
   const sel = (name, label, list, value, allLabel) => list.length
     ? `<label class="field"><span>${label}</span><select name="${name}" class="select">
         <option value="">${allLabel}</option>
-        ${list.map((v) => `<option value="${esc(v)}" ${String(value || '').toLowerCase() === String(v).toLowerCase() ? 'selected' : ''}>${esc(cap(v))}</option>`).join('')}
+        ${list.map((v) => `<option value="${esc(v)}" ${same(value, v) ? 'selected' : ''}>${esc(cap(v))}</option>`).join('')}
       </select></label>`
-    : `<label class="field"><span>${label}</span><input name="${name}" value="${esc(value || '')}" placeholder="${allLabel}" autocomplete="off"></label>`;
+    : `<label class="field"><span>${label}</span><input name="${name}" value="${esc(value || '')}" placeholder="${allLabel} (frei eintragen)" autocomplete="off"></label>`;
+  const none = !o.colors.length && !o.sizes.length;
   return `<form id="form-variant" style="margin-top:14px">
     <div class="two">
       ${sel('color', 'Farbe', o.colors, p.color, 'Alle Farben')}
       ${sel('size', 'Größe', o.sizes, p.size, 'Alle Größen')}
     </div>
-    <button class="btn small" style="margin-top:10px">Variante übernehmen</button>
-    ${o.colors.length || o.sizes.length ? '' : '<p class="hint muted">Im Shop-Link wurden keine Varianten erkannt – Farbe/Größe kannst du frei eintragen.</p>'}
+    <p class="hint muted" id="variant-info"></p>
+    <button class="btn small" style="margin-top:6px">Variante übernehmen</button>
+    ${none ? `<p class="hint muted">${p.asin ? 'Die Amazon-Abfrage liefert keine Variantenliste – Farbe/Größe bitte frei eintragen.' : 'Im Shop-Link wurden keine Auswahlmöglichkeiten erkannt – Farbe/Größe kannst du frei eintragen.'}</p>` : ''}
   </form>`;
+}
+
+/** Größenliste an die gewählte Farbe anpassen; Preis und Verfügbarkeit der Variante anzeigen. */
+function wireVariantPicker(p) {
+  const form = $('#form-variant');
+  const o = p.variantOptions || { combos: [] };
+  const combos = o.combos || [];
+  const cSel = form.querySelector('select[name=color]');
+  const sSel = form.querySelector('select[name=size]');
+  const info = $('#variant-info');
+  const low = (x) => String(x || '').toLowerCase();
+  const refresh = () => {
+    const c = cSel ? cSel.value : form.color?.value;
+    const z = sSel ? sSel.value : form.size?.value;
+    if (sSel && combos.length) {
+      for (const opt of sSel.options) {
+        if (!opt.value) continue;
+        const hits = combos.filter((k) => low(k.s) === low(opt.value) && (!c || low(k.c) === low(c)));
+        const label = cap(opt.value);
+        opt.disabled = !!c && hits.length === 0;
+        opt.textContent = !hits.length ? (c ? `${label} – in dieser Farbe nicht vorhanden` : label)
+          : hits.every((k) => !k.ok) ? `${label} – ausverkauft` : label;
+      }
+      if (sSel.selectedOptions[0]?.disabled) sSel.value = '';
+    }
+    const match = combos.filter((k) => (!c || low(k.c) === low(c)) && (!z || low(k.s) === low(sSel ? sSel.value : z)));
+    if ((c || z) && match.length) {
+      const prices = match.map((k) => k.price).filter((x) => x != null);
+      const min = prices.length ? Math.min(...prices) : null;
+      info.textContent = `${match.length === 1 ? 'Diese Variante' : `${match.length} passende Varianten`}${min != null ? ` · beim Hersteller ab ${eur(min)}` : ''}${match.every((k) => !k.ok) ? ' · derzeit ausverkauft' : ''}`;
+    } else info.textContent = '';
+  };
+  cSel?.addEventListener('change', refresh);
+  sSel?.addEventListener('change', refresh);
+  refresh();
 }
 
 function renderDetail(p) {
@@ -315,6 +353,7 @@ function renderDetail(p) {
     toast('Wunschpreis gespeichert');
   };
   $('#d-used').onchange = (e) => update(p.id, { allowUsed: e.target.checked });
+  wireVariantPicker(p);
   $('#form-variant').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);

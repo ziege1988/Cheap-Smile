@@ -262,6 +262,107 @@ export function variantFromUrl(entries, href) {
   return list.length < entries.length ? unique(list) : null;
 }
 
+// ---------- Varianten aus Shop-Systemen (Shopify, WooCommerce, Auswahlfelder) ----------
+
+const COLOR_OPT = /(farb|colou?r|couleur|kleur)/i;
+const SIZE_OPT = /(größe|groesse|grösse|size|taille|maat|gr\.?$|weite|länge|laenge)/i;
+
+/** Teilt eine Varianten-Bezeichnung wie „Black / M“ in Farbe und Größe. */
+function splitVariantTitle(t) {
+  let color = null, size = null;
+  for (const part of String(t || '').split(/\s*[/|,]\s*|\s+-\s+/)) {
+    const p = part.trim();
+    if (!p) continue;
+    if (!color && colorsInText(p).length) color = p;
+    else if (!size && SIZE_VALUE.test(p.replace(/^(gr\.?|größe|size)\s*/i, ''))) size = p.replace(/^(gr\.?|größe|size)\s*/i, '');
+  }
+  return { color, size };
+}
+
+/** WooCommerce: data-product_variations="[...]" */
+function wooVariants(html, url) {
+  const m = html.match(/data-product_variations\s*=\s*"([^"]*)"/) || html.match(/data-product_variations\s*=\s*'([^']*)'/);
+  if (!m) return [];
+  let arr;
+  try { arr = JSON.parse(decodeEntities(m[1])); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => {
+    const attrs = v.attributes || {};
+    const ck = Object.keys(attrs).find((k) => COLOR_OPT.test(k));
+    const sk = Object.keys(attrs).find((k) => SIZE_OPT.test(k.replace(/^attribute_(pa_)?/, '')));
+    let vurl = null;
+    try { const u = new URL(url); for (const [k, val] of Object.entries(attrs)) if (val) u.searchParams.set(k, val); vurl = u.toString(); } catch {}
+    return {
+      color: ck ? attrs[ck] : null, size: sk ? attrs[sk] : null,
+      price: parsePrice(v.display_price ?? v.price), gtin: v.gtin || v._gtin || v.ean || v.global_unique_id || null,
+      sku: v.sku || null, id: v.variation_id ? String(v.variation_id) : null, url: vurl,
+      available: v.is_in_stock !== false,
+    };
+  }).filter((v) => v.price != null);
+}
+
+/** Shopify: Varianten aus „var meta = {...}“ (auf jeder Produktseite) */
+function shopifyMetaVariants(html, url) {
+  const m = html.match(/var meta\s*=\s*(\{"product"[\s\S]*?\});\s*(?:\n|for|window|var)/);
+  if (!m) return [];
+  let j;
+  try { j = JSON.parse(m[1]); } catch { return []; }
+  const base = (() => { try { const u = new URL(url); return `${u.origin}${u.pathname}`; } catch { return url; } })();
+  return (j.product?.variants || []).map((v) => ({
+    ...splitVariantTitle(v.public_title || v.name),
+    price: Number.isFinite(v.price) ? v.price / 100 : parsePrice(v.price),
+    gtin: null, sku: v.sku || null, id: v.id ? String(v.id) : null, url: v.id ? `${base}?variant=${v.id}` : null, available: true,
+  })).filter((v) => v.price != null);
+}
+
+/** Shopify: Adresse der Produktdaten (/products/<handle>.json) – enthält EAN (barcode) je Variante. */
+export function shopifyJsonUrl(html, url) {
+  if (!/cdn\.shopify\.com|Shopify\.shop|shopify-section/i.test(html)) return null;
+  try {
+    const u = new URL(url);
+    const handle = u.pathname.match(/\/products\/([^/?#.]+)/)?.[1];
+    return handle ? `${u.origin}/products/${handle}.json` : null;
+  } catch { return null; }
+}
+
+export function parseShopifyJson(j, url) {
+  const p = j?.product;
+  if (!p?.variants) return [];
+  const opts = (p.options || []).map((o) => o.name || '');
+  const ci = opts.findIndex((n) => COLOR_OPT.test(n));
+  const si = opts.findIndex((n) => SIZE_OPT.test(n));
+  const base = (() => { try { const u = new URL(url); return `${u.origin}/products/${p.handle}`; } catch { return url; } })();
+  return p.variants.map((v) => {
+    const o = [v.option1, v.option2, v.option3];
+    const guess = splitVariantTitle(v.title);
+    return {
+      color: ci >= 0 ? o[ci] : guess.color, size: si >= 0 ? o[si] : guess.size,
+      price: parsePrice(v.price), oldPrice: parsePrice(v.compare_at_price), gtin: v.barcode || null,
+      sku: v.sku || null, id: v.id ? String(v.id) : null, url: v.id ? `${base}?variant=${v.id}` : null, available: v.available !== false,
+    };
+  }).filter((v) => v.price != null);
+}
+
+/** Allgemein: <select>-Felder für Farbe/Größe (nur Auswahlwerte, ohne Preise je Variante). */
+export function selectOptions(html) {
+  const out = { colors: [], sizes: [] };
+  const re = /<select\b([^>]*)>([\s\S]*?)<\/select>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const attrs = m[1];
+    const kind = COLOR_OPT.test(attrs) ? 'colors' : SIZE_OPT.test(attrs) ? 'sizes' : null;
+    if (!kind) continue;
+    const opts = [...m[2].matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/gi)]
+      .map(([, a, t]) => ({ value: (a.match(/value\s*=\s*["']([^"']*)["']/i) || [])[1], text: htmlToText(t) }))
+      .filter((o) => o.value && o.text && !/bitte|wählen|waehlen|choose|select|auswahl/i.test(o.text))
+      .map((o) => o.text.replace(/\s*[-–(].*(ausverkauft|nicht verfügbar|sold out).*$/i, '').trim());
+    out[kind].push(...opts);
+  }
+  out.colors = [...new Set(out.colors)].slice(0, 40);
+  out.sizes = [...new Set(out.sizes)].slice(0, 40);
+  return out;
+}
+
 const LISTING_TYPES = ['ItemList', 'CollectionPage', 'SearchResultsPage', 'OfferCatalog'];
 const LISTING_URL = /(\/search|\/suche|\/s\?|[?&](q|query|search|searchterm|keyword|k)=|\/kategorie|\/category|\/categories|\/c\/|\/collections\/[^/]+\/?(\?|$)|\/marke\/|\/brand\/|\/angebote\/?(\?|$)|\/sale\/?(\?|$))/i;
 
@@ -270,7 +371,7 @@ const LISTING_URL = /(\/search|\/suche|\/s\?|[?&](q|query|search|searchterm|keyw
  * want = { gtin, mpn }: gesuchter Artikel – bei Seiten mit Varianten (Größe/Farbe)
  * wird genau diese Variante gewählt.
  */
-export function extractOffer(html, url, settings = {}, want = {}) {
+export function extractOffer(html, url, settings = {}, want = {}, extra = {}) {
   const text = htmlToText(html);
   const ld = extractJsonLd(html);
 
@@ -290,7 +391,7 @@ export function extractOffer(html, url, settings = {}, want = {}) {
   try { if (LISTING_URL.test(new URL(url).pathname + new URL(url).search)) listing = listing || products.length !== 1; } catch {}
 
   // Kandidaten: jede Kombination aus Produkt(-variante) und Angebot
-  const entries = [];
+  let entries = [];
   for (const p of products) {
     for (const o of offerFromLd(p.offers)) {
       entries.push({
@@ -300,6 +401,21 @@ export function extractOffer(html, url, settings = {}, want = {}) {
           .filter(Boolean).map((x) => String(x)),
       });
     }
+  }
+  // Varianten aus dem Shop-System ergänzen, wenn die Produktdaten selbst keine Farbe/Größe nennen
+  const plat = (extra.variants?.length ? extra.variants : null) || wooVariants(html, url).concat(shopifyMetaVariants(html, url));
+  if (plat.length > 1 && !entries.some((e) => e.color || e.size)) {
+    const baseP = products.find((p) => isType(p, 'Product')) || products[0] || { name: null };
+    const baseRaw = entries[0]?.raw || {};
+    const baseCur = entries[0]?.currency || 'EUR';
+    const seen = new Set();
+    entries = plat.filter((v) => { const k = v.id || `${v.color}|${v.size}`; if (seen.has(k)) return false; seen.add(k); return true; }).map((v) => ({
+      product: baseP, price: v.price, oldPrice: v.oldPrice && v.oldPrice > v.price ? v.oldPrice : null, currency: baseCur,
+      raw: { ...baseRaw, availability: v.available === false ? 'OutOfStock' : baseRaw.availability },
+      gtin: normGtin(v.gtin), mpn: null, offerUrl: v.url, color: normColor(v.color), size: normSize(v.size),
+      ids: [v.sku, v.id].filter(Boolean).map(String),
+    }));
+    if (!products.length) products.push(baseP);
   }
   const allGtins = [...new Set(entries.map((e) => e.gtin).concat(products.map(gtinOf)).filter(Boolean))];
   const allMpns = [...new Set(entries.map((e) => e.mpn).concat(products.map((p) => normMpn(p.mpn))).filter(Boolean))];
@@ -407,6 +523,7 @@ export function extractOffer(html, url, settings = {}, want = {}) {
     colors: [...new Set(entries.map((e) => e.color).filter(Boolean))],
     size: chosen?.size || sizeOfNode(product) || null,
     sizes: [...new Set(entries.map((e) => e.size).filter(Boolean))],
+    optionLists: selectOptions(html),
     // Alle Varianten der Seite (für die Auswahl von Farbe/Größe in der App)
     variants: entries.filter((e) => e.color || e.size).slice(0, 80).map((e) => ({
       gtin: e.gtin || null, color: e.color || null, size: e.size || null, price: e.price,
