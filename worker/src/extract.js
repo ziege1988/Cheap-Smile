@@ -183,6 +183,85 @@ function propOf(n, names) {
 const colorOfNode = (n) => normColor(propOf(n, ['color', 'colour', 'farbe']));
 const sizeOfNode = (n) => normSize(propOf(n, ['size', 'groesse', 'größe', 'grösse']));
 
+const SIZE_KEY = /(size|groesse|größe|grösse|gr$|taille|weite|laenge|länge)/i;
+const SIZE_VALUE = /^(xxs|xs|s|m|l|xl|xxl|xxxl|[2-6]xl|\d{2,3}(\/\d{2,3})?|\d{1,2}(\.5|,5)?|one ?size)$/i;
+
+/** Teile eines Links: Parameter-Werte, Pfad-Abschnitte, Fragment – zerlegt in einzelne Kennungen. */
+function urlTokens(href) {
+  let u;
+  try { u = new URL(href); } catch { return { tokens: [], params: [], text: '' }; }
+  const params = [...u.searchParams.entries()];
+  const frag = decodeURIComponent(u.hash.replace(/^#/, ''));
+  for (const kv of frag.split(/[&;]/)) { const [k, v] = kv.split('='); if (v) params.push([k, v]); }
+  const raw = [
+    ...params.map(([, v]) => v),
+    ...decodeURIComponent(u.pathname).split('/'),
+    frag,
+  ].filter(Boolean);
+  const tokens = new Set();
+  for (const r of raw) {
+    tokens.add(r.toLowerCase());
+    for (const part of r.split(/[-_.,+\s:=]+/)) if (part.length >= 3) tokens.add(part.toLowerCase());
+  }
+  return { tokens: [...tokens], params, text: decodeURIComponent(`${u.pathname} ${u.search} ${u.hash}`).toLowerCase() };
+}
+
+const normUrl = (h) => {
+  try { const u = new URL(h); u.hash = ''; [...u.searchParams.keys()].filter((k) => /^(utm_|gclid|fbclid|ref|srsltid)/i.test(k)).forEach((k) => u.searchParams.delete(k)); return (u.hostname.replace(/^www\./, '') + u.pathname.replace(/\/$/, '') + u.search).toLowerCase(); } catch { return ''; }
+};
+
+/**
+ * Welche Variante meint der Link? Prüft (1) exakte Varianten-Adresse, (2) EAN/SKU/MPN/IDs im Link,
+ * (3) Farbe und Größe im Link. Gibt die Variante nur zurück, wenn sie eindeutig ist.
+ */
+export function variantFromUrl(entries, href) {
+  if (!href || entries.length < 2) return null;
+  const unique = (list) => {
+    const keys = new Set(list.map((e) => e.gtin || e.ids?.[0] || `${e.color}|${e.size}|${e.price}`));
+    return list.length && keys.size === 1 ? list.reduce((a, b) => (b.price < a.price ? b : a)) : null;
+  };
+  // 1) Exakte Adresse der Variante
+  const target = normUrl(href);
+  const byUrl = entries.filter((e) => e.offerUrl && normUrl(new URL(e.offerUrl, href).toString()) === target);
+  if (byUrl.length && byUrl.length < entries.length) return unique(byUrl); // alle gleich = nicht unterscheidend
+
+  const { tokens, params, text } = urlTokens(href);
+  if (!tokens.length) return null;
+  const tset = new Set(tokens);
+  // 2) Kennungen (EAN, SKU, MPN, Varianten-ID, auch in der Varianten-Adresse)
+  const idHit = entries.filter((e) => {
+    const ids = [...(e.ids || [])];
+    if (e.gtin) ids.push(e.gtin, e.gtin.padStart(13, '0'), e.gtin.padStart(14, '0'));
+    if (e.offerUrl) {
+      try {
+        const ou = new URL(e.offerUrl, href);
+        for (const [, v] of ou.searchParams.entries()) ids.push(v);
+        const last = ou.pathname.split('/').filter(Boolean).pop();
+        if (last && normUrl(ou.toString()) !== normUrl(href.split('?')[0])) ids.push(last);
+      } catch {}
+    }
+    return ids.some((id) => {
+      const x = String(id).toLowerCase().replace(/^.*[#/]/, '');
+      return x.length >= 3 && tset.has(x);
+    });
+  });
+  if (idHit.length && idHit.length < entries.length) {
+    const u = unique(idHit);
+    if (u) return u;
+  }
+
+  // 3) Farbe/Größe im Link
+  const colors = colorsInText(text);
+  const sizesFromParams = params.filter(([k, v]) => SIZE_KEY.test(k) && v).map(([, v]) => normSize(v));
+  const sizesFromPath = tokens.filter((t) => SIZE_VALUE.test(t) && /(gr|size|groesse|größe)[-_]?/.test(text)).map(normSize);
+  const sizes = [...new Set([...sizesFromParams, ...sizesFromPath])];
+  if (!colors.length && !sizes.length) return null;
+  let list = entries;
+  if (colors.length && entries.some((e) => e.color)) list = list.filter((e) => colors.includes(e.color));
+  if (sizes.length && entries.some((e) => e.size)) list = list.filter((e) => sizes.includes(normSize(e.size)));
+  return list.length < entries.length ? unique(list) : null;
+}
+
 const LISTING_TYPES = ['ItemList', 'CollectionPage', 'SearchResultsPage', 'OfferCatalog'];
 const LISTING_URL = /(\/search|\/suche|\/s\?|[?&](q|query|search|searchterm|keyword|k)=|\/kategorie|\/category|\/categories|\/c\/|\/collections\/[^/]+\/?(\?|$)|\/marke\/|\/brand\/|\/angebote\/?(\?|$)|\/sale\/?(\?|$))/i;
 
@@ -217,6 +296,8 @@ export function extractOffer(html, url, settings = {}, want = {}) {
       entries.push({
         product: p, ...o, gtin: gtinOf(o.raw) || gtinOf(p), mpn: normMpn(o.raw?.mpn || p.mpn), offerUrl: o.raw?.url || p.url || null,
         color: colorOfNode(o.raw?.itemOffered) || colorOfNode(p), size: sizeOfNode(o.raw?.itemOffered) || sizeOfNode(p),
+        ids: [o.raw?.sku, p.sku, o.raw?.mpn, p.mpn, p.productID, o.raw?.productID, p['@id'], o.raw?.['@id'], o.raw?.serialNumber]
+          .filter(Boolean).map((x) => String(x)),
       });
     }
   }
@@ -224,6 +305,7 @@ export function extractOffer(html, url, settings = {}, want = {}) {
   const allMpns = [...new Set(entries.map((e) => e.mpn).concat(products.map((p) => normMpn(p.mpn))).filter(Boolean))];
 
   let chosen = null;
+  let variantFromLink = false;
   const wantGs = new Set([want.gtin, ...(want.gtins || [])].map(normGtin).filter(Boolean));
   const wantG = wantGs.size ? [...wantGs][0] : null, wantM = normMpn(want.mpn);
   if (wantG) chosen = entries.filter((e) => wantGs.has(e.gtin)).reduce((a, b) => (!a || b.price < a.price ? b : a), null);
@@ -235,18 +317,17 @@ export function extractOffer(html, url, settings = {}, want = {}) {
   }
   const noIdMatch = !chosen && (wantG || wantM);
   if (!chosen && (!wantG && !wantM || noIdMatch)) {
-    // Variante über die URL (z. B. ?variant=123) oder einziges Produkt
-    let pageUrl = '';
-    try { pageUrl = new URL(url).search; } catch {}
-    const variantParam = pageUrl.match(/[?&](variant|v|size|groesse|color|farbe|sku)=([^&]+)/i)?.[2];
-    if (variantParam) chosen = entries.find((e) => e.offerUrl && String(e.offerUrl).includes(variantParam)) || null;
+    // Variante aus dem Link erkennen (Adresse, Kennungen, Farbe/Größe im Link)
+    chosen = variantFromUrl(entries, want.hintUrl || url);
+    variantFromLink = !!chosen;
     if (!chosen && entries.length) {
       const fams = new Set(entries.map((e) => e.product));
       chosen = fams.size === 1 ? entries.reduce((a, b) => (b.price < a.price ? b : a)) : entries[0];
     }
   }
   const product = chosen?.product || products.find((p) => isType(p, 'Product')) || null;
-  const ambiguousVariant = !wantG && !wantM && new Set(entries.map((e) => e.gtin || e.mpn)).size > 1;
+  const ambiguousVariant = !wantG && !wantM && !variantFromLink && !(wantC || wantS)
+    && new Set(entries.map((e) => e.gtin || e.mpn || `${e.color}|${e.size}`)).size > 1;
 
   const title = decodeEntities(
     String(product?.name || meta(html, ['og:title', 'twitter:title']) || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ''),

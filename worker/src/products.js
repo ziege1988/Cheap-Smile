@@ -130,7 +130,7 @@ async function loadOffer(fetcher, url, settings, want = {}) {
     const blocked = [401, 403, 429, 503].includes(page.status);
     return { error: blocked ? `Shop blockiert automatische Abrufe (HTTP ${page.status})` : `Seite nicht erreichbar (HTTP ${page.status || 'Fehler'})` };
   }
-  const ex = extractOffer(page.text, page.url || url, settings, want);
+  const ex = extractOffer(page.text, page.url || url, settings, { ...want, hintUrl: url });
   if (ex.isListing) return { error: 'Listen-/Kategorieseite statt Produktseite', ex, html: page.text };
   if (ex.price == null) return { error: 'Kein Preis erkennbar (Variante fehlt oder Seite ohne Produktdaten)', ex, html: page.text };
   return { ex, html: page.text };

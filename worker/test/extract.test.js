@@ -94,3 +94,31 @@ test('Varianten: genau die gesuchte EAN (Größe/Farbe) wird gewählt', () => {
   const c = extractOffer(byColor, 'https://x.de/p/shirt', {}, { color: 'marine', size: 'm' });
   assert.equal(c.price, 22, 'Variante über Farbe + Größe gewählt (Navy = Marine)');
 });
+
+test('Variante aus dem Link: Adresse, SKU/EAN/ID im Pfad, Parameter, #Fragment, Farbe/Größe', async () => {
+  const { variantFromUrl } = await import('../src/extract.js');
+  const page = (variants) => `<script type="application/ld+json">${JSON.stringify({ '@type': 'ProductGroup', name: 'Shirt', productGroupID: 'S', hasVariant: variants })}</script>`;
+  const v = (o) => ({ '@type': 'Product', name: 'Shirt', ...o, offers: { '@type': 'Offer', price: String(o.price || 30), priceCurrency: 'EUR', ...(o.url ? { url: o.url } : {}) } });
+  const html = page([
+    v({ color: 'Schwarz', size: 'M', sku: 'SH-BLK-M', gtin13: '4001234000011', productID: '881' }),
+    v({ color: 'Schwarz', size: 'L', sku: 'SH-BLK-L', gtin13: '4001234000028', productID: '882' }),
+    v({ color: 'Navy', size: 'M', sku: 'SH-NAV-M', gtin13: '4001234000035', productID: '883' }),
+  ]);
+  const g = (u) => extractOffer(html, u.split('#')[0], {}, { hintUrl: u }).gtin;
+  assert.equal(g('https://shop.de/shirt?attribute_pa_farbe=navy&attribute_pa_groesse=m'), '4001234000035', 'Farbe+Größe als Parameter');
+  assert.equal(g('https://shop.de/shirt/SH-BLK-L'), '4001234000028', 'SKU im Pfad');
+  assert.equal(g('https://shop.de/shirt?pid=882'), '4001234000028', 'Varianten-ID unter beliebigem Namen');
+  assert.equal(g('https://shop.de/shirt?ean=4001234000011'), '4001234000011', 'EAN im Link');
+  assert.equal(g('https://shop.de/shirt#size=L&color=schwarz'), '4001234000028', 'Auswahl hinter #');
+  assert.equal(g('https://shop.de/shirt-navy'), '4001234000035', 'nur eine Navy-Variante -> eindeutig');
+  const amb = extractOffer(html, 'https://shop.de/shirt-schwarz', {}, { hintUrl: 'https://shop.de/shirt-schwarz' });
+  assert.equal(amb.ambiguousVariant, true, 'Schwarz gibt es in M und L -> nicht eindeutig');
+
+  const shopify = page([
+    v({ color: 'Black', size: 'S', url: 'https://x.de/products/tee?variant=111', price: 20 }),
+    v({ color: 'Black', size: 'M', url: 'https://x.de/products/tee?variant=222', price: 21 }),
+  ]);
+  const sx = extractOffer(shopify, 'https://x.de/products/tee?variant=222&utm_source=insta', {}, { hintUrl: 'https://x.de/products/tee?variant=222&utm_source=insta' });
+  assert.deepEqual([sx.price, sx.size, sx.ambiguousVariant], [21, 'M', false], 'Shopify-Variante trotz Tracking-Parametern');
+  assert.equal(variantFromUrl([], 'https://x.de'), null);
+});
