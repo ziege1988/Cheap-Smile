@@ -72,6 +72,13 @@
         </span>
         <input type="checkbox" name="allowUsed" class="switch">
       </label>
+      <label class="switch-row">
+        <span>
+          <strong>Amazon einbeziehen</strong>
+          <small class="muted">Täglicher Preis-Check bei Amazon.de – verbraucht ca. 30 von 250 Gratis-Suchen im Monat</small>
+        </span>
+        <input type="checkbox" name="includeAmazon" class="switch" checked>
+      </label>
       <p class="hint muted">Es werden nur Shops berücksichtigt, die Trustpilot, Impressum, Herkunft und Rückgabe-Prüfung bestehen.</p>
       <button type="submit" class="btn primary block" id="btn-add-submit">Hinzufügen &amp; suchen</button>
     </form>
@@ -106,6 +113,9 @@
         <button type="button" class="btn ghost" id="btn-test-push">Test senden</button>
       </div>
       <p class="hint muted" id="push-state"></p>
+
+      <h3>Suchkontingent (SerpApi)</h3>
+      <p class="hint muted" id="quota-state">–</p>
 
       <h3>Shop-Prüfung</h3>
       <div class="two">

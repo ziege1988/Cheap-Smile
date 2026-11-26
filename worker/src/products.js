@@ -6,6 +6,7 @@ import { fetchText, domainOf, matchScore, BudgetExceeded, HOUR, DAY } from './ut
 import { extractOffer, normGtin, normMpn, normColor, normSize, colorsInText } from './extract.js';
 import { getShopVerdict } from './shopcheck.js';
 import { searchCandidates } from './search.js';
+import { amazonSearch, AMAZON_DOMAIN } from './amazon.js';
 import { applyOfferRules, recordHistory, evaluateAlerts, bestOffer, effectiveTotal } from './deal.js';
 
 
@@ -184,6 +185,50 @@ async function refreshOffer(env, product, fetcher, settings, o) {
   });
 }
 
+const AMAZON_INTERVAL_HOURS = 24;
+
+/** Amazon-Angebot über SerpApi suchen, mit denselben strengen Regeln abgleichen und eintragen. */
+async function checkAmazon(env, product, fetcher, settings, { priority }) {
+  const existing = product.offers.find((o) => o.source === 'amazon');
+  const query = product.gtin || product.name;
+  let { results, error, quota } = await amazonSearch(fetcher, env, query, { priority });
+  // EAN liefert bei Amazon nicht immer Treffer -> einmal mit dem Namen nachfassen
+  if (!results.length && !quota && product.gtin && priority) ({ results, error, quota } = await amazonSearch(fetcher, env, product.name, { priority }));
+  product.amazonError = error || null;
+  if (quota) {
+    if (existing) existing.quotaStale = true; // letzter Preis bleibt, wird als veraltet markiert
+    return;
+  }
+  product.lastAmazonAt = Date.now();
+  let hit = null, note = null, whyNot = null;
+  for (const r of results) {
+    const m = sameArticle(product, r);
+    if (m.ok) { hit = r; note = m.note; break; }
+    whyNot ||= m.why;
+  }
+  product.offers = product.offers.filter((o) => o.source !== 'amazon');
+  product.skipped = (product.skipped || []).filter((x) => x.domain !== AMAZON_DOMAIN);
+  if (!hit) {
+    if (results.length) product.skipped.push({ domain: AMAZON_DOMAIN, url: results[0].url, why: `Amazon: ${whyNot || 'kein exakt passender Artikel'}`, at: Date.now() });
+    else if (!error) product.skipped.push({ domain: AMAZON_DOMAIN, url: `https://www.amazon.de/s?k=${encodeURIComponent(query)}`, why: 'Amazon: nicht gefunden', at: Date.now() });
+    return;
+  }
+  const verdict = await getShopVerdict(env, AMAZON_DOMAIN, fetcher, settings);
+  const shipping = hit.shipping ?? settings.fallbackShipping;
+  const notes = [note, 'Verkäufer bei Amazon prüfen (Amazon oder Drittanbieter)'].filter(Boolean).join(', ');
+  product.offers.push({
+    source: 'amazon', url: hit.url, domain: AMAZON_DOMAIN, shopName: 'Amazon.de', title: hit.title,
+    price: hit.price, shipping, shippingEstimated: hit.shipping == null || hit.shippingEstimated,
+    freeShippingFrom: null, total: Math.round((hit.price + shipping) * 100) / 100, currency: 'EUR',
+    oldPrice: hit.oldPrice && hit.oldPrice > hit.price ? hit.oldPrice : null,
+    discountPct: hit.oldPrice && hit.oldPrice > hit.price ? Math.round((1 - hit.price / hit.oldPrice) * 100) : null,
+    condition: hit.condition, available: hit.available, coupons: [], returnCost: null, seller: null,
+    shop: shopSummary(verdict), manual: false, matchedBy: sameArticle(product, hit).by, matchNote: notes,
+    fails: 0, checkedAt: Date.now(), firstSeen: existing?.firstSeen || Date.now(), quotaStale: false,
+  });
+  if (!product.image && hit.image) product.image = hit.image;
+}
+
 /**
  * @param {object} opts { force: alles neu prüfen }
  * @returns alert | null
@@ -205,12 +250,19 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
       await considerCandidate(env, product, fetcher, settings, product.sourceUrl, { manual: true });
     }
 
-    // Bekannte Angebote aktualisieren (älteste zuerst)
+    // Bekannte Angebote aktualisieren (älteste zuerst) – Amazon läuft separat über SerpApi
     const due = product.offers
-      .filter((o) => force || t - (o.checkedAt || 0) > PRICE_INTERVAL_HOURS * HOUR)
+      .filter((o) => o.source !== 'amazon' && (force || t - (o.checkedAt || 0) > PRICE_INTERVAL_HOURS * HOUR))
       .sort((a, b) => (a.checkedAt || 0) - (b.checkedAt || 0));
     for (const o of due) await refreshOffer(env, product, fetcher, settings, o);
     product.offers = product.offers.filter((o) => !o.remove && (!o.stale || t - o.checkedAt < 7 * DAY));
+
+    // Amazon.de (einmal täglich, nur mit Schalter)
+    if (!product.includeAmazon) {
+      product.offers = product.offers.filter((o) => o.source !== 'amazon');
+    } else if (!product.nameFromUrl && (force || !product.lastAmazonAt || t - product.lastAmazonAt > AMAZON_INTERVAL_HOURS * HOUR)) {
+      await checkAmazon(env, product, fetcher, settings, { priority: force || !product.lastAmazonAt });
+    }
 
     // Neue Shops suchen
     if (product.nameFromUrl) {
@@ -233,6 +285,14 @@ export async function checkProduct(env, product, fetcher, settings, { force = fa
       product.candidatesFound = candidates.length;
       for (const c of candidates.slice(0, MAX_CANDIDATES * 2)) {
         if (c.blocked) { excludeDomain(product, c.domain, ['Auf der Sperrliste'], c.url); continue; }
+        if (c.domain === AMAZON_DOMAIN) {
+          // Amazon blockiert direkte Abrufe – Preis kommt über die Amazon-Abfrage
+          if (!product.includeAmazon) {
+            product.skipped = (product.skipped || []).filter((x) => x.domain !== c.domain);
+            product.skipped.push({ domain: c.domain, url: c.url, why: 'Amazon-Schalter ist aus', at: Date.now() });
+          }
+          continue;
+        }
         await considerCandidate(env, product, fetcher, settings, c.url);
         if (product.offers.length >= 15) break;
       }
@@ -259,6 +319,7 @@ export function toClient(p) {
     id: p.id, name: p.name, image: p.image, wishPrice: p.wishPrice, allowUsed: !!p.allowUsed,
     variantHint: p.variantHint || null, gtin: p.gtin || null, mpn: p.mpn || null, brand: p.brand || null,
     color: p.color || null, size: p.size || null, skipped: p.skipped || [], candidatesFound: p.candidatesFound ?? null,
+    includeAmazon: !!p.includeAmazon, amazonError: p.amazonError || null, lastAmazonAt: p.lastAmazonAt || null,
     createdAt: p.createdAt, lastCheckAt: p.lastCheckAt, lastError: p.lastError, searchError: p.searchError, searchSource: p.searchSource,
     best: best ? { ...best, effectiveTotal: effectiveTotal(best) } : null,
     offers: (p.offers || []).map((o) => ({ ...o, effectiveTotal: o.total != null ? effectiveTotal(o) : null })),

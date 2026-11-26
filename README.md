@@ -50,6 +50,10 @@ Cloudflare Worker (Free)                    ← worker/
 - **Preise:** werden aus den schema.org-Produktdaten der Shopseite gelesen (wie bei Google Shopping), ersatzweise aus Meta-Tags bzw. dem Seitentext.
 - **Free-Tarif-Grenzen:** 50 Abrufe pro Worker-Lauf. Der Cron arbeitet deshalb in Portionen; bei vielen Produkten dauert ein kompletter Durchlauf mehrere Läufe.
 
+## Amazon
+
+Amazon blockiert direkte Abrufe. Mit dem Schalter **„Amazon einbeziehen“** (pro Produkt) fragt die App Amazon.de einmal täglich über die **SerpApi-Amazon-Suche** ab und prüft das Ergebnis mit denselben strengen Regeln. Jede Abfrage verbraucht eine Suche aus dem kostenlosen Monatskontingent (250). Ist es aufgebraucht, zeigt die App einen Hinweis, markiert den letzten Amazon-Preis mit Datum und sendet einmal pro Monat eine Push-Nachricht. **Es entstehen keine Kosten** (kostenloser Tarif ohne Zahlungsmittel).
+
 ## Einrichtung
 
 👉 **[ANLEITUNG.md](ANLEITUNG.md) – Schritt für Schritt, ohne Programmierkenntnisse.**
@@ -60,7 +64,7 @@ nach `main` mergen. KV-Speicher und Web-Push-Schlüssel legt das System selbst a
 
 ## Entwicklung
 ```bash
-cd worker && npm test     # 46 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
+cd worker && npm test     # 50 Tests: Preis-Extraktion, Shop-Prüfung, Push-Verschlüsselung, Ende-zu-Ende
 npx wrangler dev          # API lokal
 ```
 

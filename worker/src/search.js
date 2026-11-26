@@ -22,7 +22,7 @@ export function parseDuckDuckGo(html) {
   return urls;
 }
 
-const monthKey = () => `serpapi:${new Date().toISOString().slice(0, 7)}`;
+export const monthKey = () => `serpapi:${new Date().toISOString().slice(0, 7)}`;
 
 /** Darf jetzt eine Google-Suche verbraucht werden? (gleichmäßige Verteilung über den Monat) */
 export function googleAllowed(used, limit, date = new Date(), priority = false) {
@@ -137,4 +137,35 @@ export async function trustpilotViaGoogle(fetcher, env, domain) {
   await env.DB.put(key, String(used + 1), { expirationTtl: 40 * 86400 });
   if (!r.ok) return null;
   try { return parseTrustpilotFromSerp(JSON.parse(r.text), domain); } catch { return null; }
+}
+
+/**
+ * Kontingent-Status: eigener Zähler + (wenn möglich) echter Stand bei SerpApi.
+ * Die SerpApi-Kontoabfrage verbraucht keine Suche.
+ */
+export async function quotaStatus(env, fetcher = null, now = new Date()) {
+  const limit = Number(env.SERPAPI_MONTHLY_LIMIT || 240);
+  const month = now.toISOString().slice(0, 7);
+  let used = Number((await env.DB.get(`serpapi:${month}`)) || 0);
+  let left = Math.max(0, limit - used);
+  let source = 'app';
+  if (env.SERPAPI_KEY && fetcher) {
+    try {
+      const r = await fetchText(fetcher, `https://serpapi.com/account.json?api_key=${encodeURIComponent(env.SERPAPI_KEY)}`, { init: { headers: { Accept: 'application/json' }, timeout: 8000 } });
+      if (r.ok) {
+        const j = JSON.parse(r.text);
+        const realLeft = Number(j.total_searches_left ?? j.plan_searches_left);
+        if (Number.isFinite(realLeft)) {
+          // 10 Suchen Puffer, damit SerpApi selbst nie ins Leere läuft
+          left = Math.min(left, Math.max(0, realLeft - 10));
+          source = 'serpapi';
+          if (Number.isFinite(Number(j.this_month_usage))) used = Math.max(used, Number(j.this_month_usage));
+        }
+      }
+    } catch {}
+  }
+  const exhausted = left <= 0;
+  const pausedToday = !exhausted && !googleAllowed(limit - left, limit, now, false);
+  const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  return { enabled: !!env.SERPAPI_KEY, month, used, limit, left, exhausted, pausedToday, resetDate: reset.toISOString().slice(0, 10), source };
 }

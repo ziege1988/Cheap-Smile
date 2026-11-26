@@ -18,6 +18,20 @@ const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.p
 
 let products = [];
 let pollTimer = null;
+let quota = null; // Stand des Suchkontingents (SerpApi)
+
+const fmtDate = (iso) => new Date(iso).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' });
+const amazonPaused = () => !!quota?.enabled && (quota.exhausted || quota.pausedToday);
+function quotaText() {
+  if (!quota?.enabled) return '';
+  if (quota.exhausted) return `Suchkontingent aufgebraucht – Amazon-Abfragen und die Suche nach neuen Shops pausieren bis ${fmtDate(quota.resetDate)}. Bekannte Shops werden weiter geprüft. Es entstehen keine Kosten.`;
+  if (quota.pausedToday) return 'Amazon-Abfragen sind für heute pausiert – das Monatskontingent wird gleichmäßig verteilt. Morgen geht es automatisch weiter.';
+  return '';
+}
+
+async function loadQuota() {
+  try { quota = await api('/api/quota'); } catch { quota = null; }
+}
 
 // ---------- API ----------
 async function api(path, { method = 'GET', body } = {}) {
@@ -113,6 +127,9 @@ function badgesFor(p) {
   if (best?.discountPct) b.push(`<span class="badge hot">🔥 Aktion −${best.discountPct} %</span>`);
   if (best && best.condition !== 'new') b.push(`<span class="badge gold">${condLabel(best.condition)}</span>`);
   if (best) b.push(trustBadge(best.shop));
+  if (p.includeAmazon && (amazonPaused() || (p.offers || []).some((o) => o.source === 'amazon' && o.quotaStale))) {
+    b.push('<span class="badge warn">Amazon pausiert</span>');
+  }
   return b.join('');
 }
 
@@ -161,8 +178,9 @@ async function load({ silent = false } = {}) {
   const btn = $('#btn-refresh');
   btn.classList.add('spin');
   try {
-    products = await api('/api/products');
+    [products] = await Promise.all([api('/api/products'), loadQuota()]);
     render();
+    updateBanner();
     schedulePoll();
   } catch (e) {
     if (!silent) toast(e.message, 3500);
@@ -214,6 +232,7 @@ function offerHtml(o, p, isBest) {
       ${o.seller ? `<span>Verkäufer: ${esc(o.seller)}</span>` : ''}
       ${checksText(o.shop) ? `<span style="color:var(--brand)">Geprüft: ${esc(checksText(o.shop))}</span>` : `${o.shop?.country ? `<span>Sitz: ${esc(o.shop.country)}</span>` : ''}${o.shop?.withdrawalDays ? `<span>${o.shop.withdrawalDays} Tage Widerruf</span>` : ''}`}
       ${o.matchedBy ? `<span>Abgleich: ${esc(o.matchedBy)}</span>` : ''}
+      ${o.quotaStale ? `<span style="color:var(--warn)">Preis vom ${new Date(o.checkedAt).toLocaleDateString('de-DE')} – Suchkontingent erreicht</span>` : ''}
       ${o.matchNote ? `<span style="color:var(--warn)">⚠️ ${esc(o.matchNote)}</span>` : ''}
       ${why ? `<span style="color:var(--hot)">${esc(why)}</span>` : ''}
     </div>
@@ -244,6 +263,8 @@ function renderDetail(p) {
     </form>
     <label class="switch-row"><span><strong>Gebrauchte Artikel erlauben</strong><small class="muted">Gebraucht, refurbished, B-Ware</small></span>
       <input type="checkbox" class="switch" id="d-used" ${p.allowUsed ? 'checked' : ''}></label>
+    <label class="switch-row"><span><strong>Amazon einbeziehen</strong><small class="muted">${p.includeAmazon ? (p.lastAmazonAt ? `Zuletzt abgefragt ${relTime(p.lastAmazonAt)}` : 'Wird beim nächsten Lauf abgefragt') : 'Aus – spart Suchkontingent'}${p.amazonError && !amazonPaused() ? ` · ${esc(p.amazonError)}` : ''}</small>${p.includeAmazon && amazonPaused() ? `<small style="color:var(--warn);display:block;margin-top:4px">⚠️ Kann aktuell nicht bei Amazon anfragen: ${esc(quotaText())}</small>` : ''}</span>
+      <input type="checkbox" class="switch" id="d-amazon" ${p.includeAmazon ? 'checked' : ''}></label>
     <h3>Angebote (${offers.length})</h3>
     ${offers.length ? offers.map((o) => offerHtml(o, p, o.url === bestUrl)).join('') : '<p class="muted">Noch keine geprüften Angebote.</p>'}
     <p class="hint muted">Gesuchter Artikel: ${[p.brand, p.gtin ? `EAN ${p.gtin}` : '', p.mpn ? `Art.-Nr. ${p.mpn}` : '', p.color ? `Farbe ${p.color}` : '', p.size ? `Größe ${p.size}` : ''].filter(Boolean).map(esc).join(' · ') || 'nur Bezeichnung'}. Andere Shops zählen nur bei gleicher EAN – oder, wenn ein Shop keine EAN angibt, bei gleicher Marke, Bezeichnung, Farbe und Größe.</p>
@@ -267,6 +288,12 @@ function renderDetail(p) {
     toast('Wunschpreis gespeichert');
   };
   $('#d-used').onchange = (e) => update(p.id, { allowUsed: e.target.checked });
+  $('#d-amazon').onchange = (e) => {
+    update(p.id, { includeAmazon: e.target.checked });
+    if (e.target.checked && amazonPaused()) toast(`Eingeschaltet – Amazon kann aktuell aber nicht abgefragt werden. ${quotaText()}`, 6000);
+    else toast(e.target.checked ? 'Amazon wird jetzt abgefragt …' : 'Amazon ausgeschaltet');
+    if (e.target.checked) setTimeout(() => load({ silent: true }), 15000);
+  };
   $('#d-delete').onclick = () => remove(p.id);
   $('#d-refresh').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Prüfe…';
@@ -343,6 +370,7 @@ $('#form-add').addEventListener('submit', async (e) => {
       query: String(f.get('query')).trim(),
       wishPrice: f.get('wishPrice') ? String(f.get('wishPrice')).replace(',', '.') : null,
       allowUsed: f.get('allowUsed') === 'on',
+      includeAmazon: f.get('includeAmazon') === 'on',
     } });
     products.unshift(p);
     render();
@@ -364,6 +392,12 @@ async function openSettings() {
   $('#version').textContent = `Version ${APP_VERSION === '__VERSION__' ? 'dev' : APP_VERSION.slice(0, 7)}`;
   updatePushState();
   open('settings');
+  loadQuota().then(() => {
+    const q = quota;
+    $('#quota-state').textContent = !q ? '–' : q.enabled
+      ? `${q.used} von ${q.limit} Suchen diesen Monat verbraucht, noch ${q.left} übrig${q.source === 'serpapi' ? ' (Stand direkt von SerpApi)' : ''}. Neues Kontingent ab ${fmtDate(q.resetDate)}. Kostenloser Tarif – es fallen keine Kosten an.${quotaText() ? ' ' + quotaText() : ''}`
+      : 'Kein SerpApi-Schlüssel hinterlegt – Suche über DuckDuckGo, Amazon nicht verfügbar.';
+  });
   if (!cfg.token) setTimeout(() => f.token.focus(), 300);
   if (!cfg.apiBase || !cfg.token) return;
   try {
@@ -488,6 +522,8 @@ async function updateBanner() {
   let html = '';
   if (!cfg.apiBase || !cfg.token) {
     html = '<span>Willkommen! Gib einmalig dein Passwort ein.</span><button class="btn primary small" id="bn-act">Einrichten</button>';
+  } else if (quotaText()) {
+    html = `<span>ℹ️ ${esc(quotaText())}</span>`;
   } else if (!isStandalone() && /iPhone|iPad/.test(navigator.userAgent)) {
     html = '<span>Tipp: Über Teilen → „Zum Home-Bildschirm“ wird Cheap Smile zur App – nur dann gibt es Push.</span>';
   } else if (pushSupported() && Notification.permission !== 'granted') {

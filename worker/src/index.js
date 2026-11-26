@@ -7,6 +7,7 @@ import { getSettings, saveSettings, getProduct, saveProduct, deleteProduct, allP
 import { checkProduct, toClient } from './products.js';
 import { bestOffer, effectiveTotal } from './deal.js';
 import { sendPush, b64urlEncode } from './push.js';
+import { quotaStatus } from './search.js';
 
 const json = (data, status = 200, env) => new Response(JSON.stringify(data), {
   status,
@@ -108,7 +109,7 @@ async function handleApi(req, env, ctx, url) {
       name: isUrl ? (body.name?.trim() || domainOf(q) || q) : q,
       nameFromUrl: isUrl && !body.name,
       sourceUrl: isUrl ? q : null,
-      wishPrice: wish, allowUsed: !!body.allowUsed,
+      wishPrice: wish, allowUsed: !!body.allowUsed, includeAmazon: body.includeAmazon !== false,
       offers: [], excluded: [], history: [], notify: {},
     };
     await saveProduct(env, product);
@@ -139,12 +140,23 @@ async function handleApi(req, env, ctx, url) {
       if ('allowUsed' in body) {
         product.allowUsed = !!body.allowUsed;
       }
+      if ('includeAmazon' in body) {
+        product.includeAmazon = !!body.includeAmazon;
+        if (!product.includeAmazon) product.offers = (product.offers || []).filter((o) => o.source !== 'amazon');
+        else product.lastAmazonAt = null;
+      }
+      const amazonTurnedOn = body.includeAmazon === true;
       if (typeof body.name === 'string' && body.name.trim()) product.name = body.name.trim().slice(0, 120);
       const best = bestOffer(product);
       product.best = best ? { domain: best.domain, total: effectiveTotal(best), url: best.url } : null;
       await saveProduct(env, product);
+      if (amazonTurnedOn) ctx.waitUntil(runCheck(env, product).catch((e) => console.log('check error', e)));
       return json(toClient(product), 200, env);
     }
+  }
+
+  if (path === '/api/quota' && method === 'GET') {
+    return json(await quotaStatus(env, createFetcher(fetch, 2)), 200, env);
   }
 
   // Einstellungen
@@ -189,6 +201,13 @@ export async function scheduled(env, fetchImpl = fetch) {
     await saveProduct(env, p);
     if (alert) await notifyAll(env, alert, fetchImpl);
     checked++;
+  }
+  // Einmal pro Monat Bescheid geben, wenn das Suchkontingent aufgebraucht ist
+  const q = await quotaStatus(env);
+  if (q.enabled && q.exhausted && !(await env.DB.get(`quota-notified:${q.month}`))) {
+    await env.DB.put(`quota-notified:${q.month}`, '1', { expirationTtl: 40 * 86400 });
+    const reset = new Date(q.resetDate).toLocaleDateString('de-DE');
+    await notifyAll(env, { title: 'ℹ️ Suchkontingent aufgebraucht', body: `Amazon und die Suche nach neuen Shops pausieren bis ${reset}. Bekannte Shops werden weiter geprüft. Es entstehen keine Kosten.`, url: './', tag: 'quota' }, fetchImpl);
   }
   return { checked, used: fetcher.used() };
 }
