@@ -120,6 +120,24 @@ In der Kachel:
 
 ---
 
+## Schritt 10 (optional) – Wächter bei cron-job.org
+
+cron-job.org prüft alle 30 Minuten, ob dein Preis-Wächter erreichbar ist, und schickt dir eine E-Mail, falls nicht. Kostenlos, ein Konto bei cron-job.org genügt.
+
+1. Bei **https://cron-job.org** anmelden → **„Cronjob erstellen“**
+2. **Titel:** `Cheap Smile Wächter`
+3. **Adresse (URL)** – genau so, ohne Platzhalter:
+   ```
+   https://cheap-smile-api.ziege-machmaeh.workers.dev/api/health
+   ```
+4. **Zeitplan:** alle 30 Minuten
+5. **Benachrichtigungen:** „bei Fehlschlag“ aktivieren
+6. **Speichern**
+
+**Kontrolle:** Die Adresse aus Punkt 3 in Safari öffnen – es muss `{"ok":true,…}` erscheinen. In cron-job.org zeigt der Verlauf („Verlauf“/„History“) nach dem ersten Lauf **„200 OK“**.
+
+> Die Adresse verrät nur „ok“ und die Uhrzeit – deine Produkte und dein Passwort bleiben geschützt.
+
 ## Wenn etwas nicht klappt
 
 | Problem | Lösung |
@@ -128,6 +146,7 @@ In der Kachel:
 | „KV-Speicher konnte nicht angelegt werden“ | Der API-Token hat zu wenig Rechte. Lege ihn neu mit der Vorlage **„Edit Cloudflare Workers“** an (Schritt 2) und ersetze das Secret. |
 | Rotes ❌ bei „App veröffentlichen“ | Schritt 6 prüfen (Source = GitHub Actions), dann **„Re-run all jobs“**. |
 | „App veröffentlichen“ bricht sofort ab (ohne Protokoll) | **Settings → Environments → github-pages → Deployment branches**: Regel **`main`** hinzufügen. |
+| cron-job.org meldet „404 Not Found“ und deaktiviert den Job | Adresse im Cron-Job prüfen (Schritt 10, Punkt 3) – kein Platzhalter wie „xxxx“, danach Job wieder aktivieren. |
 | „workers.dev subdomain“-Fehler | Bei Cloudflare unter **Workers & Pages** einmalig eine Subdomain festlegen (Schritt 1.4). |
 | App meldet „Nicht autorisiert“ | Das Passwort in der App stimmt nicht mit `APP_TOKEN` überein. Groß-/Kleinschreibung beachten. |
 | „Push aktivieren“ geht nicht | Die App muss vom **Home-Bildschirm** geöffnet sein, nicht in Safari. Außerdem iOS 16.4+ und iPhone-Einstellungen → Mitteilungen → Cheap Smile → Erlauben. |
